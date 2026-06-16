@@ -1,0 +1,1 @@
+ALTER TABLE ledger ALTER COLUMN entry_id TYPE varchar(36);
