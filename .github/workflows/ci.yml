@@ -1,0 +1,26 @@
+name: CI
+
+# Run on every push to main and on every pull request.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest   # GitHub's Linux runner has Docker, so Testcontainers works here
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'   # matches <java.version> in pom.xml
+          cache: maven         # cache ~/.m2 so dependencies aren't re-downloaded every run
+
+      # Compiles, runs the Testcontainers integration tests, and packages the jar.
+      # Testcontainers spins up a throwaway Postgres via the runner's Docker daemon.
+      - name: Build and test
+        run: mvn -B verify
