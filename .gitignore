@@ -1,0 +1,14 @@
+# Maven build output
+target/
+
+# IntelliJ IDEA (machine-specific; don't commit IDE settings)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS junk
+.DS_Store
+
+# Logs
+*.log

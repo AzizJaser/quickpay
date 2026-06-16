@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: wallet-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/wallet
+    username: wallet
+    password: wallet
+
+  jpa:
+    hibernate:
+      # 'validate' means Hibernate checks the schema matches your entities but
+      # never changes it. Flyway owns the schema, not Hibernate. Do NOT set this
+      # to 'update' in a money system — you want migrations to be explicit.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false   # keep transactions inside the service layer, not the view
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8080
+
+logging:
+  level:
+    org.hibernate.SQL: debug   # see the SQL Hibernate generates while you learn
+
+wallet:
+  max-per-cif: ${WALLET_MAX_PER_CIF:5}
+  create-max-retries: ${WALLET_CREATE_MAX_RETRIES:5}
+  reconciliation-interval-ms: ${WALLET_RECONCILIATION_INTERVAL_MS:60000}
