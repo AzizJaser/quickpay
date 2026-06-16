@@ -1,0 +1,10 @@
+server:
+  port: 9090   # the simulator runs on 9090; the wallet service is on 8080
+
+gateway:
+  # MUST match the wallet service's webhook secret. Dev-only shared secret.
+  webhook-secret: super-secret-key
+
+wallet:
+  # where the wallet service receives gateway webhooks
+  webhook-url: http://localhost:8080/v1/gateway/webhook
