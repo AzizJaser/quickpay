@@ -27,4 +27,10 @@ public class LedgerEntryController {
         walletService.topUp(request.wallet_number(), request.amount(),idempotencyKey);
         return ResponseEntity.status(HttpStatus.OK).build();
     }
+
+    @PostMapping("/withdraw")
+    public ResponseEntity<Void> withdraw(@RequestBody @Valid TopUpRequest request,  @RequestHeader("Idempotency-Key") String idempotencyKey){
+        walletService.withdraw(request.wallet_number(), request.amount(),idempotencyKey);
+        return ResponseEntity.status(HttpStatus.OK).build();
+    }
 }

@@ -15,8 +15,6 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Random;
-
 
 @Service
 @RequiredArgsConstructor
@@ -24,7 +22,8 @@ public class WalletService {
 
     private final WalletRepository walletRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
-    private final String INTERNAL_WALLET = "000000000001";
+    private final String INTERNAL_TRANSACTION_ACCOUNT = "000000000001";
+    private final String INTERNAL_OUTWARD_ACCOUNT = "000000000002";
     private static final Logger logger = LoggerFactory.getLogger(WalletService.class);
 
     @Value("${wallet.max-per-cif:5}")
@@ -81,7 +80,11 @@ public class WalletService {
 
     @Transactional
     public void topUp(String wallet_number,Long amount,String idempotencyKey){
-        transfer(INTERNAL_WALLET,wallet_number,amount,idempotencyKey);
+        transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey);
+    }
+    @Transactional
+    public void withdraw(String wallet_number,Long amount,String idempotencyKey){
+        transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey);
     }
 
     public Wallet createWallet(String cif,String wallet_name){
