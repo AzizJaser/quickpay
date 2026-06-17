@@ -5,9 +5,16 @@ import com.quickpay.wallet.dto.request.TransferRequest;
 import com.quickpay.wallet.service.WalletService;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 
 @AllArgsConstructor
 @RestController
@@ -15,6 +22,7 @@ import org.springframework.web.bind.annotation.*;
 public class LedgerEntryController {
 
     private final WalletService walletService;
+
 
     @PostMapping("/betweenWallets")
     public ResponseEntity<Void> transferBetweenWallets(@RequestBody @Valid TransferRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
