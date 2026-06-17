@@ -35,7 +35,9 @@ public class WebhookSender {
 
     /** Simulate a real payment: build a signed webhook and deliver it to the wallet. */
     public Map<String, Object> sendPayment(String walletNumber, long amount) {
-        String txnId = "GW-" + UUID.randomUUID();
+        // Gateway txn id kept within the wallet's 36-char idempotency-key contract:
+        // "GW-" (3) + 32 hex chars (UUID without hyphens) = 35 chars.
+        String txnId = "GW-" + UUID.randomUUID().toString().replace("-", "");
         String body = buildBody(walletNumber, amount, txnId);
         sentBodies.put(txnId, body);
         int status = post(body, signer.sign(body, secret));
