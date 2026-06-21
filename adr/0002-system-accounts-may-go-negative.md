@@ -1,6 +1,6 @@
 # ADR-0002 — System accounts may go negative
 
-- **Status:** Accepted
+- **Status:** Accepted — amended by ADR-0004 (flag split; the negative-balance principle still holds for the money-source account)
 - **Date:** 2026-06-16
 - **Deciders:** Abdulaziz
 
