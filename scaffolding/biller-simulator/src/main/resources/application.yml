@@ -1,0 +1,8 @@
+server:
+  port: 9091   # biller simulator; the gateway simulator is on 9090, the wallet service on 8080
+
+biller:
+  # NORMAL-mode behaviour (used when no outcome is forced via POST /simulate/mode).
+  failure-rate: 0.0        # 0.0 = always succeed; raise toward 1.0 for sabotage testing
+  default-delay-ms: 0      # artificial latency added to every pay call (simulate a slow biller)
+  timeout-sleep-ms: 65000  # how long TIMEOUT mode sleeps (past a ~60s caller timeout) before settling PAID
