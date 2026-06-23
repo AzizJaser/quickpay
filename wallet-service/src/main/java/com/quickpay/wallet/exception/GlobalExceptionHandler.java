@@ -106,4 +106,12 @@ public class GlobalExceptionHandler {
         return problemDetail;
     }
 
+    @ExceptionHandler(EntryNotFoundException.class)
+    public ProblemDetail handlerEntyNotFoundException(EntryNotFoundException e){
+        logger.warn("entry with id :{} is not found",e.getEntryId());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND, e.getMessage());
+        problem.setTitle("entry Not Found");
+        return problem;
+    }
 }

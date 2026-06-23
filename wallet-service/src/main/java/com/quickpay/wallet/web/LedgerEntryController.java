@@ -1,5 +1,7 @@
 package com.quickpay.wallet.web;
 
+import com.quickpay.wallet.domain.LedgerEntry;
+import com.quickpay.wallet.dto.request.ReversRequest;
 import com.quickpay.wallet.dto.request.TopUpRequest;
 import com.quickpay.wallet.dto.request.TransferRequest;
 import com.quickpay.wallet.service.WalletService;
@@ -25,9 +27,9 @@ public class LedgerEntryController {
 
 
     @PostMapping("/betweenWallets")
-    public ResponseEntity<Void> transferBetweenWallets(@RequestBody @Valid TransferRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
-        walletService.transfer(request.debitedWalletNumber(), request.creditedWalletNumber(), request.amount(), idempotencyKey);
-        return ResponseEntity.status(HttpStatus.OK).build();
+    public ResponseEntity<String> transferBetweenWallets(@RequestBody @Valid TransferRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
+        String entryId = walletService.transfer(request.debitedWalletNumber(), request.creditedWalletNumber(), request.amount(), idempotencyKey,null);
+        return ResponseEntity.ok(entryId);
     }
 
     @PostMapping("/top-up")
@@ -40,5 +42,11 @@ public class LedgerEntryController {
     public ResponseEntity<Void> withdraw(@RequestBody @Valid TopUpRequest request,  @RequestHeader("Idempotency-Key") String idempotencyKey){
         walletService.withdraw(request.wallet_number(), request.amount(),idempotencyKey);
         return ResponseEntity.status(HttpStatus.OK).build();
+    }
+
+    @PostMapping("/revers")
+    public ResponseEntity<String> revers(@RequestBody @Valid ReversRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
+        String entryId = walletService.revers(request.original_entry_id(),idempotencyKey);
+        return ResponseEntity.ok(entryId);
     }
 }
