@@ -36,7 +36,7 @@ public class GatewayWebhookController {
 
 
     @PostMapping("/v1/gateway/webhook")
-    public ResponseEntity<Void> webhook(@Valid @RequestBody String rawBody,
+    public ResponseEntity<Void> webhook(@RequestBody String rawBody,
                                         @RequestHeader("X-Signature") String signature) throws JsonProcessingException {
         // 1. verify: HMAC-SHA256(rawBody, secret) as lowercase hex, constant-time compare to signature
         //    → if mismatch, return 401 (reject the forgery)
