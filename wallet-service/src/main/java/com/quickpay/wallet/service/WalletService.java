@@ -36,7 +36,7 @@ public class WalletService {
 
     // need to write the DTOs for this service
     @Transactional
-    public String transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey,String original_entry_id){
+    public LedgerEntry transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey,String original_entry_id){
 
         if(amount == null || amount <= 0) {
                 throw new InvalidAmountException("Unable to the transaction, amount is 0 or less");
@@ -75,19 +75,19 @@ public class WalletService {
         // post ledger entry
         LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id);
         ledgerEntryRepository.save(entry);
-        return entry.getEntryId();
+        return entry;
     }
 
     @Transactional
-    public String topUp(String wallet_number,Long amount,String idempotencyKey){
+    public LedgerEntry topUp(String wallet_number,Long amount,String idempotencyKey){
         return transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey,null);
     }
     @Transactional
-    public String withdraw(String wallet_number,Long amount,String idempotencyKey){
+    public LedgerEntry withdraw(String wallet_number,Long amount,String idempotencyKey){
         return transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey,null);
     }
     @Transactional
-    public String revers(String original_entry_id, String idempotencyKey){
+    public LedgerEntry revers(String original_entry_id, String idempotencyKey){
         LedgerEntry entry = ledgerEntryRepository.findByEntryId(original_entry_id)
                 .orElseThrow(()-> new EntryNotFoundException(original_entry_id));
         return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id);

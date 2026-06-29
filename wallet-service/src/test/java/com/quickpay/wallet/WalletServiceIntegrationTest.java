@@ -1,5 +1,6 @@
 package com.quickpay.wallet;
 
+import com.quickpay.wallet.domain.LedgerEntry;
 import com.quickpay.wallet.domain.Wallet;
 import com.quickpay.wallet.exception.DuplicatedEntryException;
 import com.quickpay.wallet.exception.EntryNotFoundException;
@@ -141,8 +142,8 @@ public class WalletServiceIntegrationTest {
         walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-01");
 
         // -- ACT (HOLD AND REVERS) --
-        String entryId = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-02",null);
-        walletService.revers(entryId,"Trx-REVERS-03");
+        LedgerEntry entry = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-02",null);
+        walletService.revers(entry.getEntryId(),"Trx-REVERS-03");
 
 
         // -- ASSERT --
@@ -159,7 +160,7 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2111100000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        String entryId = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-02");
+        LedgerEntry entryId = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-02");
 
         // -- ACT + THROW--
         assertThrows(EntryNotFoundException.class,
@@ -178,13 +179,13 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2111000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        String entryId = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-03");
+        LedgerEntry entry = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-03");
 
         // -- ACT (HOLD AND REVERS twice) --
-        String entryId1 = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-03",null);
-        String entryId2 = walletService.revers(entryId1,"Trx-REVERS-04");
+        LedgerEntry entry1 = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-03",null);
+        LedgerEntry entry2 = walletService.revers(entry1.getEntryId(),"Trx-REVERS-04");
         assertThrows(DuplicatedEntryException.class,
-                () -> walletService.revers(entryId1,"Trx-REVERS-04"));
+                () -> walletService.revers(entry1.getEntryId(),"Trx-REVERS-04"));
 
 
         // -- ASSERT --
@@ -204,10 +205,10 @@ public class WalletServiceIntegrationTest {
         walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-04");
 
         // -- ACT (HOLD AND REVERS twice) --
-        String entryId = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-04",null);
-        String entryId2 = walletService.revers(entryId,"Trx-REVERS-05");
+        LedgerEntry entry = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-04",null);
+        LedgerEntry entry2 = walletService.revers(entry.getEntryId(),"Trx-REVERS-05");
         assertThrows(InsufficientBalanceException.class,
-                () -> walletService.revers(entryId,"Trx-REVERS-06"));
+                () -> walletService.revers(entry.getEntryId(),"Trx-REVERS-06"));
 
 
         // -- ASSERT --
