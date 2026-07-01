@@ -22,4 +22,14 @@ public class GlobalExceptionHandler {
         problem.setTitle("Reserve Declined");
         return problem;
     }
+
+    @ExceptionHandler(BillNotFoundException.class)
+    public ProblemDetail handlerBillNotFoundException(BillNotFoundException e){
+        logger.warn("Payment request with number not found {}",e.getMessage());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND, e.getMessage());
+        problem.setTitle("Bill is not found");
+        return problem;
+    }
 }

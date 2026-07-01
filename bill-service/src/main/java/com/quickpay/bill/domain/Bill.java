@@ -18,24 +18,24 @@ public class Bill {
 
     @Id
     @Column(name = "payment_id")
-    private String paymentId;
+    private java.lang.String paymentId;
     @Column(name = "bill_reference")
-    private String billReference;
+    private java.lang.String billReference;
     @Column(name = "wallet_number")
-    private String walletNumber;
+    private java.lang.String walletNumber;
 
     private Long amount;
     @Enumerated(EnumType.STRING)
     private BillStatus status;
     @Column(name = "entry_id")
-    private String entryId;
+    private java.lang.String entryId;
     @Column(name = "idempotency_key")
-    private String idempotencyKey;
+    private java.lang.String idempotencyKey;
 
     @Column(insertable = false, updatable = false,name = "created_at")
     private LocalDateTime created_at;
 
-    public Bill(String billReference, String walletNumber, Long amount, String idempotencyKey) {
+    public Bill(java.lang.String billReference, java.lang.String walletNumber, Long amount, java.lang.String idempotencyKey) {
         this.paymentId = UUID.randomUUID().toString();
         this.billReference = billReference;
         this.walletNumber = walletNumber;
