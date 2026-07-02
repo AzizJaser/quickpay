@@ -31,4 +31,16 @@ public class BillerClient {
                 }))
                 .body(BillerResult.class);
     }
+
+    public BillerResult inquire(String paymentId){
+        return billerClient
+                .get()
+                .uri("/biller/v1/payments/{ref}",paymentId)
+                .retrieve()
+                .onStatus(status -> status.value() == 404, ((request, response) -> {
+                    // nothing, the bill is not found
+                }))
+                .body(BillerResult.class);
+
+    }
 }

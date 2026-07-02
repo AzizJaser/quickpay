@@ -33,3 +33,6 @@ logging:
 quickpay:
   wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080}
   biller-base-url: ${BILLER_BASE_URL:http://localhost:9091}
+
+bill:
+  eod-interval-ms: ${BILL_RECONCILIATION_INTERVAL_MS:10000}

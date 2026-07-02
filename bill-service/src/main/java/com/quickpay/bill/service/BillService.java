@@ -90,22 +90,33 @@ public class BillService {
             BillerResult billerResult =
                     billerClient.pay(new BillerPayRequest(bill.getBillReference(),bill.getAmount(),bill.getPaymentId()));
 
-            if (billerResult.status() == BillerStatus.FAILED){
-                // call the wallet to reverse tbe the Trx
-                walletClient.reverse(bill.getEntryId(), reversKey);
-                bill.setStatus(BillStatus.Rejected);
-            } else if (billerResult.status() == BillerStatus.PAID) {
-                // call the wallet to move the fund to biller account
-                walletClient.capture(bill.getAmount(),captureKey);
-                bill.setStatus(BillStatus.Paid);
-            }
+            bill = resolve(bill,billerResult);
 
-            billRepository.save(bill);
+//            billRepository.save(bill);
         } catch (HttpServerErrorException e){
             logger.error("5xx from biller gateway, Payment ID {}",paymentId);
             // nothing EOD job will reconcile
         } catch (ResourceAccessException e){
             logger.error("timeout / unable to connect to biller gateway, Payment ID {}",paymentId);
         }
+    }
+
+    public Bill resolve(Bill bill, BillerResult result){
+        switch (result.status()){
+            case PAID: {
+                walletClient.capture(bill.getAmount(),"c" + bill.getPaymentId().replace("-",""));
+                bill.setStatus(BillStatus.Paid);
+                billRepository.save(bill);
+            } break;
+            case FAILED: {
+                walletClient.reverse(bill.getEntryId(), "v" + bill.getPaymentId().replace("-",""));
+                bill.setStatus(BillStatus.Rejected);
+                billRepository.save(bill);
+            } break;
+            case NOT_FOUND: // nothing
+                break;
+        }
+
+        return bill;
     }
 }
