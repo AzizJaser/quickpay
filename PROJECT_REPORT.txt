@@ -1,0 +1,323 @@
+================================================================================
+QUICKPAY — PROJECT REPORT
+A ledger-backed payment system built as a production-engineering learning project
+Report generated: 2026-07-01
+Author: Abdulaziz Aljaser (junior solution architect)
+================================================================================
+
+--------------------------------------------------------------------------------
+0. WHAT THIS PROJECT IS
+--------------------------------------------------------------------------------
+QuickPay is a hands-on learning build of a small but realistic payments platform.
+The stated rule of the project: the human writes ALL application code; the AI acts
+as a blunt senior reviewer/explainer and only scaffolds infrastructure (mock
+simulators, build config, Docker). The point is to learn production engineering by
+building it, so the learning value stays with the person typing the code.
+
+Core discipline enforced throughout ("the golden rule"): MONEY IS NEVER CREATED OR
+DESTROYED. This is guaranteed by the database itself (constraints), not by trusting
+application code to be correct. A second working rule ("predict-then-run", Rule 5):
+before every test or migration run, write down the predicted outcome first, then
+run and compare — this is how wrong mental models get caught.
+
+Tech stack: Java 21/23, Spring Boot 3.3.5, PostgreSQL 16, Flyway (migrations),
+Hibernate/JPA, Lombok, Testcontainers, Maven multi-module monorepo, Docker Compose.
+
+--------------------------------------------------------------------------------
+1. SYSTEM ARCHITECTURE (as of this report)
+--------------------------------------------------------------------------------
+Maven monorepo with four modules:
+
+  wallet-service       (port 8080) — the money ledger. Owns accounts + balances.
+  bill-service         (port 8081) — the bill-payment saga orchestrator.
+  scaffolding/gateway-simulator (9090) — mock card/payment gateway (AI-built mock).
+  scaffolding/biller-simulator  (9091) — mock external biller network (AI-built mock).
+
+Each service owns its OWN PostgreSQL database (data ownership):
+  wallet -> localhost:5432  (docker container quickpay-wallet-db)
+  bill   -> localhost:5433  (docker container quickpay-bill-db)
+
+The two simulators are mocks of EXTERNAL systems, not QuickPay services — they do
+not count against the "max 4 services" scope rule.
+
+--------------------------------------------------------------------------------
+2. THE WALLET SERVICE (COMPLETE, TESTED, IN PRODUCTION-SHAPE)
+--------------------------------------------------------------------------------
+Purpose: a ledger-backed account system. Every movement of money is recorded so
+that conservation is provable and enforced by the database.
+
+KEY DESIGN DECISIONS (each captured as an ADR — see section 6):
+  * Two-leg single-row ledger: one ledger row holds BOTH sides of a movement
+    (debited_amount negative, credited_amount positive). The DB enforces
+    conservation with CHECK(debited_amount + credited_amount = 0). A one-sided
+    money move literally cannot be committed. (ADR-0001)
+  * Money = BIGINT minor units <-> Java Long. No floating point.
+  * Append-only ledger: reversals are NEW rows, never edits/deletes.
+  * Cached wallet.balance, updated in the same transaction as the ledger entry,
+    reconciled against SUM(entries) by a scheduled job.
+  * Idempotency via a client-supplied key + UNIQUE(idempotency_key) constraint.
+  * Concurrency: pessimistic FOR UPDATE lock, always acquired in a consistent
+    order (sort the two wallet ids, lock the larger first) to prevent deadlock
+    cycles — NOT timeouts (a timeout is only a backstop).
+  * System accounts may go negative (the money-source account is negative by
+    design); customer wallets may not. (ADR-0002, later refined by ADR-0004)
+
+CORE OPERATIONS (all in one @Transactional each):
+  * transfer(from, to, amount, key)  — the primitive; validates amount, blocks
+    self-transfer, checks idempotency, locks both wallets in order, checks status
+    (Active) + balance, moves money both sides, writes ONE ledger row.
+  * topUp(wallet, amount, key)        = transfer(INWARD_ACCOUNT -> wallet)
+  * withdraw(wallet, amount, key)     = transfer(wallet -> OUTWARD_ACCOUNT)
+  * reverse(originalEntryId, key)     = a NEW transfer that swaps the parties of
+    the original entry (temp/suspense -> customer), guarded so it can only ever
+    happen once per entry.
+  * Wallet lifecycle: create / activate / suspend / close (status state).
+  * Reconciliation job (@Scheduled): flags any wallet where balance != SUM(legs).
+
+SYSTEM ACCOUNTS (internal, not customer wallets):
+  000000000001  Inward / TopUp   — money source; is_internal, allows_negative=TRUE
+  000000000002  Outward          — withdrawal sink; is_internal, allows_negative=FALSE
+  000000000003  Suspense/Temp    — holds reserved money mid-bill; is_internal,
+                                    allows_negative=FALSE (never goes negative)
+  000000000004  Biller settlement— receives captured bill funds; is_internal,
+                                    allows_negative=FALSE
+  Conservation invariant now spans:
+    inward + customers + suspense + outward + biller = 0
+
+HTTP API (wallet):
+  POST /v1/wallets                          create wallet
+  GET  /v1/wallets/{number}                 fetch
+  PUT  /v1/wallets/activate|suspend/{n}     lifecycle
+  DELETE /v1/wallets/close/{n}
+  POST /v1/transfer/betweenWallets          transfer (returns entry_id)
+  POST /v1/transfer/top-up                  top-up
+  POST /v1/transfer/withdraw                withdraw
+  POST /v1/transfer/revers                  reverse a prior entry
+  POST /v1/gateway/webhook                  secured HMAC webhook (see below)
+  (all transfer endpoints return a TransactionResponse carrying entry_id +
+   idempotency key, so callers like the bill service get a receipt.)
+
+GATEWAY WEBHOOK (money IN via an external gateway simulator):
+  The gateway simulator (:9090) sends HMAC-SHA256-signed webhooks. The wallet
+  verifies the signature (lowercase hex, constant-time MessageDigest.isEqual),
+  401s a forgery, then tops up the wallet using the gateway txn id as the
+  idempotency key. Redelivery -> still 200, no double credit. Verified live.
+
+TESTING (wallet):
+  Testcontainers (real throwaway Postgres) integration tests — 8/8 green:
+    - transfer moves money and conserves total
+    - insufficient balance throws and nothing moves (atomicity)
+    - duplicated idempotency key replay moves money exactly once
+    - reconciliation detects drift
+    - reverse moves money back
+    - reverse of a non-existent entry -> 404
+    - reverse replay with same key -> 409 (at-most-once)
+    - over-reverse after temp empty -> blocked by the suspense balance floor
+  CI: GitHub Actions runs `mvn verify` (with Testcontainers) on push/PR.
+
+--------------------------------------------------------------------------------
+3. THE REVERSE PATH & SUSPENSE ACCOUNT (wallet migrations V7-V9)
+--------------------------------------------------------------------------------
+Built to support the bill-payment flow's compensation (reverse) step. Designed via
+Socratic review; the final design deliberately DIFFERED from the first sketch:
+
+  * V7 — split the single "is_system" flag into TWO orthogonal flags:
+        is_internal    (system-owned, not a customer wallet)
+        allows_negative(a money source; may carry a negative balance)
+    Rationale (ADR-0004): is_system secretly meant two different things that
+    happen to coincide for the inward account but DIVERGE for the suspense
+    account. The suspense account is internal but must NEVER go negative. New
+    constraint: CHECK(balance >= 0 OR allows_negative). Seeded the suspense
+    account 000000000003. The transfer balance-skip in code was switched to key
+    off allows_negative (NOT is_internal) — the critical trap: keying off
+    is_internal would let the suspense account overdraw before the DB could stop it.
+
+  * V8 — added reverses_entry_id (nullable) + a self-FK to ledger(entry_id).
+    A reversal row is a normal keyed ledger row whose reverses_entry_id points at
+    the entry it undoes — a clear, queryable audit link. Design chosen after
+    rejecting a nullable-idempotency-key + XOR-check alternative.
+
+  * V9 — UNIQUE(reverses_entry_id). Makes "an entry can be reversed at most once"
+    a database FACT (defense-in-depth), independent of the deterministic-key
+    discipline. Crucial for the SHARED suspense account, where the balance floor
+    alone can't catch a double-reverse (the pool may hold other bills' money).
+
+Reverse safety rests on THREE independent guards:
+  (1) deterministic reverse idempotency key (UNIQUE(idempotency_key) collapses retries)
+  (2) suspense balance >= 0 floor (a reverse-after-capture fails at the DB)
+  (3) UNIQUE(reverses_entry_id) (one reversal per entry, ever)
+
+--------------------------------------------------------------------------------
+4. THE BILL-PAYMENT SAGA (bill-service — THE HARD PART OF THE PROJECT)
+--------------------------------------------------------------------------------
+Why it's hard: unlike top-up/transfer/withdraw (all fast, single-DB, ACID), bill
+payment crosses an EXTERNAL biller network that is SLOW (up to ~60s) and FLAKY
+(timeouts, 5xx). Requirement: a customer must NEVER lose money to a biller failure,
+and a bill must NEVER show "paid" if the biller didn't actually receive it.
+
+THE SAGA (state machine: Pending -> Reserved -> Paid | Rejected):
+  1. CREATE (write-ahead intent): record the bill as Pending and COMMIT it FIRST,
+     before any money moves. This durable row is the recovery anchor — if anything
+     later crashes, the intent survives and can be reconciled.
+  2. RESERVE: move customer -> suspense (000000000003) via the wallet. Store the
+     returned ledger entry_id on the bill; flip Pending -> Reserved. If the wallet
+     declines (insufficient funds -> HTTP 400), flip Pending -> Rejected. Transient
+     errors leave it Pending.
+  3. CALL THE BILLER: send pay(billNumber, amount, reference=paymentId) and branch:
+       PAID (200)    -> CAPTURE: move suspense -> biller (000000000004); flip Paid.
+       FAILED (422)  -> REVERSE: undo the reserve (suspense -> customer); flip Rejected.
+       UNKNOWN (5xx / timeout) -> leave Reserved; do NOT guess. The EOD sweep will
+                       later inquire and resolve. "When you don't know, don't move money."
+
+ORDERING RULE, everywhere: MOVE MONEY FIRST, FLIP STATUS LAST. A bill is never
+marked terminal until the money has actually moved.
+
+TWO KINDS OF IDENTIFIER (a subtle, important distinction that was worked out):
+  * billReference — issued by the BILLER, printed on the bill, given to the
+    customer. Answers "which bill?". Reused across attempts. NOT a dedup key
+    (deduping on it would block a legitimate retry of a failed bill).
+  * paymentId — generated by the BILL SERVICE, one per payment record. The biller's
+    idempotency/inquire handle AND the seed for the wallet keys. Stable across a
+    payment's own system retries.
+  * Inbound: a CLIENT-supplied idempotency key (UNIQUE) guarantees one customer
+    request -> one payment record. A deliberate re-pay uses a new key (the
+    customer's responsibility); the system's own retries reuse the same ids.
+  * Wallet keys derived from paymentId, hyphen-stripped to fit varchar(36):
+    reserve "r"+id, capture "c"+id, reverse "v"+id.
+
+EXACTLY-ONCE ACROSS THE FLAKY BILLER = at-least-once retry + idempotent consumer.
+The bill service retries with a STABLE reference; the biller stores one outcome per
+reference and replays it (or answers an inquiry). Neither half alone is enough.
+
+ASYNC EXECUTION (so the slow biller never blocks the customer):
+  The customer's POST returns "Reserved" IMMEDIATELY (built before the biller call).
+  payBiller() is @Async (fire-and-forget, called controller -> service through the
+  Spring proxy — self-invocation would NOT be async). The final Paid/Rejected
+  settles on a background thread; the client would poll GET to see it.
+  DURABILITY CAVEAT: @Async is in-memory. A crash between reserve and pay would
+  strand money in suspense. The REQUIRED safety net is the DB-backed EOD sweep
+  (see section 7 — the next feature to build).
+
+HTTP timeouts: the biller RestClient has a read timeout so a hung biller actually
+throws (ResourceAccessException) instead of blocking forever — that thrown timeout
+is the UNKNOWN signal.
+
+BILL SCHEMA (bill-service V1): payment_id (PK), bill_reference, wallet_number,
+amount (CHECK > 0), status varchar CHECK IN (Pending,Reserved,Paid,Rejected),
+entry_id (NULLABLE — null until reserve, for write-ahead), idempotency_key
+(NOT NULL UNIQUE), created_at.
+
+--------------------------------------------------------------------------------
+5. VERIFICATION — WHAT HAS BEEN PROVEN END-TO-END
+--------------------------------------------------------------------------------
+Every scenario below was run live across the real services with predict-then-run;
+all predictions matched.
+
+  WALLET (unit/integration, Testcontainers): 8/8 tests green (section 2).
+
+  BILL SAGA (manual cross-service, all three apps up):
+   * Inbound idempotency: same client key -> same payment record (no duplicate row);
+     new key -> new record; changed body on a deduped key returns the STORED record.
+   * Reserve happy: fund 5000, pay 2000 -> Reserved, customer 5000->3000,
+     suspense +2000. Money conserved.
+   * Reserve decline: pay 9000 > 3000 balance -> wallet 400 -> bill Rejected,
+     no money moved.
+   * Biller PAID (async): HTTP returns Reserved instantly; bill flips to Paid;
+     ledger shows 2 legs (r: customer->suspense, c: suspense->biller); customer
+     -2000, biller +2000. Conserved.
+   * Biller FAILED (async): bill -> Rejected; reverse leg (v: suspense->customer)
+     with reverses_entry_id linking the reserve leg; customer made whole; biller
+     untouched. Conserved.
+   * Biller UNKNOWN (sim SERVER_ERROR/503): bill STAYS Reserved; money parked in
+     suspense; only the reserve leg exists; an inquiry to the biller returns 404
+     (never settled) confirming the service correctly did not guess.
+
+--------------------------------------------------------------------------------
+6. ARCHITECTURE DECISION RECORDS (ADRs)
+--------------------------------------------------------------------------------
+(Full text lives on the docs/adr-and-learning-docs branch, not on main.)
+  ADR-0001  Two-leg single-row ledger (DB-enforced conservation).            Accepted
+  ADR-0002  System accounts may go negative (uniform reconciliation).        Accepted
+                                                (amended by 0004)
+  ADR-0003  Applied Flyway migrations are immutable / forward-only.          Accepted
+  ADR-0004  Split is_system -> is_internal + allows_negative.                Proposed
+  (Also on that branch: quickpay-project-brief, learning-log, learning-playbook,
+   sequence diagrams for the bill-payment and gateway-webhook flows.)
+
+--------------------------------------------------------------------------------
+7. WHAT REMAINS — THE EOD SWEEP (next and final feature of this phase)
+--------------------------------------------------------------------------------
+The UNKNOWN branch deliberately leaves a Reserved bill with money parked in
+suspense, unresolved. The End-Of-Day sweep is the one mechanism that closes this,
+and it does TWO jobs at once:
+  (1) UNKNOWN RESOLVER — periodically find Reserved bills, INQUIRE the biller
+      (GET /biller/v1/payments/{paymentId}: 200 PAID/FAILED, or 404 NOT_FOUND),
+      and resolve via the SAME capture/reverse paths. Pending too long
+      (> ~1 day) -> reverse + raise a payment-ops ticket.
+  (2) DURABILITY NET — re-picks-up any bill stranded Reserved by an @Async crash,
+      which is what makes @Async safe for money.
+Build steps: BillerClient.inquire() (must NOT throw on 404 — NOT_FOUND is a valid
+answer), BillRepository.findByStatus(Reserved), @EnableScheduling + a @Scheduled
+sweep component (mirroring the wallet's reconciliation job), and a resolver that
+reuses the capture/reverse logic (idempotency keys make the retry safe).
+
+Other known follow-ups (non-blocking): the V9 UNIQUE(reverses_entry_id) is not yet
+exercised by an automated test (needs a shared-temp double-reverse test); the bill
+service has no automated integration tests yet (only manual verification); the
+create-only POST /bill/create endpoint is a debug convenience and could be removed.
+
+--------------------------------------------------------------------------------
+8. GIT HISTORY (chronological)
+--------------------------------------------------------------------------------
+  2026-06-11  Initial commit
+  2026-06-11  AI agent rules
+  2026-06-16  Build QuickPay wallet service: ledger, transfers, top-up, reconciliation
+  2026-06-16  Add withdrawal flow with outward system account
+  2026-06-16  Add CI workflow (GitHub Actions): build + Testcontainers on push/PR
+  2026-06-16  Merge PR #1 feat/wallet-service
+  2026-06-16  Restructure into a Maven multi-module monorepo
+  2026-06-17  Add secured gateway webhook (HMAC signature + idempotency)
+  2026-06-17  Merge PR #2 feat/gateway-webhook
+  2026-06-21  Scaffold biller simulator (mock biller network)
+  2026-06-23  Add reverse path for bill flow (suspense account, V7-V9)
+  2026-06-23  Lower biller-sim timeout knob; drop no-op @Valid on webhook raw body
+  2026-06-26  Add bill-service module + write-ahead create-payment slice
+  2026-06-29  wallet: return entry_id from transfer endpoints
+  2026-06-29  bill: reserve step — hold customer funds in suspense via the wallet
+  2026-07-01  wallet: add biller settlement account (V10)
+  2026-07-01  bill: biller call with capture/reverse, run async
+  (Current branch: feat/biller-simulator. Last two commits are local, not yet pushed.)
+
+--------------------------------------------------------------------------------
+9. RECURRING LESSONS LEARNED (the "gotchas" this build kept teaching)
+--------------------------------------------------------------------------------
+  * Applied migrations are immutable — editing one that already ran = Flyway
+    checksum mismatch on next boot; fix forward with a new migration (ADR-0003).
+  * Flyway runs the copy in target/classes, NOT src — rebuild before re-running a
+    changed migration.
+  * snake_case entity fields break Spring Data derived queries (findByEntryId) —
+    use camelCase fields (mapped to snake columns) or @Query.
+  * @Enumerated with no argument defaults to ORDINAL (integer column). Use
+    @Enumerated(EnumType.STRING) and match enum constant CASE to the DB CHECK.
+  * Native Postgres ENUM types fight Hibernate — use varchar + CHECK instead.
+  * A boolean field named "internal" -> Lombok getter isInternal() -> JPA expects
+    column "internal"; pin it with @Column(name="is_internal") or accept the ugly
+    getter. (Renaming is_internal -> internal silently broke schema validation.)
+  * @Transactional self-invocation: this.method() bypasses the proxy — no new
+    transaction, and @Async doesn't run async. Call across a bean boundary.
+  * Optional is never null — check isPresent()/orElse, not != null.
+  * Cross-service DTOs must match the OTHER service's JSON field names exactly
+    (Jackson maps by name) — e.g. original_entry_id vs originalEntryId; billNumber
+    vs billReference. A mismatch silently sends null.
+  * Idempotency keys must fit varchar(36) — "reserve:"+UUID overflows; strip
+    hyphens and use a 1-char prefix (33 chars). (Same trap as "GW-"+UUID earlier.)
+  * Two beans of the same type (two RestClients) need name-matched injection or
+    @Qualifier, or startup is ambiguous.
+  * A read timeout must be configured or a hung HTTP call blocks forever and the
+    timeout exception never fires.
+  * predict-then-run caught wrong mental models repeatedly — it is the single most
+    useful habit in this project.
+
+================================================================================
+END OF REPORT
+================================================================================
