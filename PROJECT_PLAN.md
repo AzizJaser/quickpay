@@ -11,9 +11,29 @@
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Merge `feat/biller-simulator` into `main`.** It is verified (both happy and failure
-paths re-tested 2026-07-30) but `main` is still stale at 2026-06-17 and does not
-contain the bill-service at all. After that, pick the next increment from §6.
+**Write automated tests for `bill-service` — ONE test at a time.** It currently has
+zero, so CI passes trivially and nothing guards the saga against regressions. This is
+the single biggest quality gap in the project.
+
+**Approach for the first pass:** service-layer integration tests (Testcontainers for
+the real Postgres, like `WalletServiceIntegrationTest`) with the two HTTP clients
+mocked — `@MockBean WalletClient` and `@MockBean BillerClient`. Fast, and it targets
+the logic that actually carries risk (guards, state transitions, `resolve` branching)
+rather than HTTP plumbing. Wiremock can come later if real-HTTP coverage is wanted.
+
+**Write them in this order, one per sitting, reviewed before moving on:**
+1. `createPayment` dedup — same client `Idempotency-Key` returns the same record, no
+   second row; a new key creates a new one.
+2. `reserveFunds` happy — wallet returns an entry id → bill becomes `Reserved` and
+   stores `entry_id`.
+3. `reserveFunds` declined — wallet client throws `ReserveDeclinedException` → bill
+   becomes `Rejected`, `entry_id` stays null.
+4. `resolve` PAID → capture called once, bill `Paid`.
+5. `resolve` FAILED → reverse called once, bill `Rejected`.
+6. Sweep picks up a `Reserved` bill, inquires, and resolves it.
+
+⚠️ Reuse the wallet's hard-won test lesson: the Testcontainers DB is shared across test
+methods with no rollback, so **every test needs unique idempotency keys and CIFs**.
 
 ---
 
@@ -164,14 +184,13 @@ be torn up to reach the target. The baseline conforms to the target architecture
 Work in **one increment per session**. Do not open several at once.
 
 ### Immediate
-- [ ] **Merge `feat/biller-simulator` → `main`** (~20 min). Verified; `main` is 11 commits behind.
+- [x] ~~Merge `feat/biller-simulator` → `main`~~ — **done 2026-07-30 via PR #3.**
+      `main` now contains bill-service, wallet V7–V10, and both simulators.
 
 ### Bucket A — finish the build (Phase 6)
-- [ ] **Bill-service automated tests** — currently zero; CI passes trivially.
-      Recommended first pass: service-layer tests with `WalletClient`/`BillerClient`
-      mocked (fast, covers dedup, reserve→Reserved, decline→Rejected, resolve
-      PAID→Paid / FAILED→Rejected, sweep picks up a Reserved bill). Wiremock later if
-      HTTP coverage is wanted. **Write ONE test at a time.**
+- [ ] **◀ IN PROGRESS — Bill-service automated tests.** Currently zero; CI passes
+      trivially. See the NEXT ACTION section at the top for the approach and the
+      ordered list of six tests. **Write ONE at a time, reviewed before the next.**
 - [ ] **Notifications (req 5)** — the natural home for **RabbitMQ**. Must never block or
       fail a payment. Likely service #3.
 - [ ] **History / statement (req 6)** — decide service #4 vs inside wallet first.
@@ -283,3 +302,4 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-07-30 | `feat/biller-simulator` merged to `main` via PR #3 — bill-service, wallet V7–V10 and both simulators are now on `main`. NEXT ACTION moved to bill-service automated tests (six tests, one at a time). |
