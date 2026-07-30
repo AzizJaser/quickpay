@@ -206,6 +206,30 @@ Work in **one increment per session**. Do not open several at once.
 - [ ] Boxes-and-arrows + P2P sequence diagram (Phase 2)
 - [ ] OpenAPI + async message schemas (Phase 4)
 
+### ⚠️ Known test-coverage boundary — mocks prove *reaction*, not *plumbing*
+
+The bill-service tests use `@MockBean` on `WalletClient` / `BillerClient`. Timeouts and
+5xx are simulated by telling the mock to **throw** (`ResourceAccessException`,
+`HttpServerErrorException`), which correctly tests **our reaction** — bill stays
+`Reserved`/`Pending`, and `verifyNoInteractions` proves no money moved.
+
+**These tests do NOT cover, and green CI must not be read as covering:**
+- that the **read timeout is actually configured** on the `billerRestClient` bean — if
+  `.withReadTimeout(...)` were deleted, the mock tests still pass while production
+  hangs forever
+- that `.onStatus(422, no-throw)` correctly turns a real 422 into a `FAILED` body
+- that cross-service DTO field names match the other service's JSON
+  (the `billNumber`/`reference`, `original_entry_id` traps)
+
+Those are real-HTTP concerns; only **Wiremock** (a stub server that can delay or return
+503) would guard them. Deliberately deferred.
+
+**Manually verified, but unguarded against regression:** the full TIMEOUT path was
+proven by hand on 2026-07-02 (biller settled PAID after the caller gave up → EOD sweep
+inquired → captured → `Paid`, capture applied exactly once).
+
+- [ ] *(optional, later)* Wiremock tests for the two HTTP clients to close this gap
+
 ### Small deferred refinements
 - [ ] Bill NOT_FOUND age policy: pending > 24h → reverse + raise ops ticket (not built;
       an unused `LocalDateTime` import in `EODReconciliationJob` marks the spot)
