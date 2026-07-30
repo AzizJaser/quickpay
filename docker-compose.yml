@@ -19,5 +19,24 @@ services:
       timeout: 3s
       retries: 5
 
+  # Separate Postgres for the bill service (its own data, on host port 5433).
+  bill-db:
+    image: postgres:16
+    container_name: quickpay-bill-db
+    environment:
+      POSTGRES_DB: bill
+      POSTGRES_USER: bill
+      POSTGRES_PASSWORD: bill
+    ports:
+      - "5433:5432"
+    volumes:
+      - bill_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bill -d bill"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   wallet_pgdata:
+  bill_pgdata:

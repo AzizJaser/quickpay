@@ -28,7 +28,12 @@ public class Wallet {
     @Enumerated(EnumType.STRING)
     private WalletStatus status;
 
-    private boolean isSystem;
+//    private boolean isSystem; changed to internal and allows_negative
+
+    @Column(name = "is_internal")
+    private boolean internal;
+
+    private boolean allowsNegative;
 
     @Column(insertable = false, updatable = false)
     private LocalDateTime created_at;

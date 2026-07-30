@@ -1,11 +1,11 @@
-package com.quickpay.gatewaysim;
+package com.quickpay.billersim;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class GatewaySimulatorApplication {
+public class BillerSimulatorApplication {
     public static void main(String[] args) {
-        SpringApplication.run(GatewaySimulatorApplication.class, args);
+        SpringApplication.run(BillerSimulatorApplication.class, args);
     }
 }

@@ -36,7 +36,7 @@ public class WalletService {
 
     // need to write the DTOs for this service
     @Transactional
-    public void transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey){
+    public LedgerEntry transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey,String original_entry_id){
 
         if(amount == null || amount <= 0) {
                 throw new InvalidAmountException("Unable to the transaction, amount is 0 or less");
@@ -66,25 +66,31 @@ public class WalletService {
         if(creditedWallet.getStatus() != WalletStatus.Active){
             throw new WalletNotActiveException("Wallet not active",creditedWalletNumber,creditedWallet.getStatus());
         }
-        if(debitedWallet.getBalance() >= amount || debitedWallet.isSystem()){
+        if(debitedWallet.getBalance() >= amount || debitedWallet.isAllowsNegative()){
             debitedWallet.setBalance(debitedWallet.getBalance()-amount);
             creditedWallet.setBalance(creditedWallet.getBalance()+amount);
         }else{
             throw new InsufficientBalanceException("insufficient balance for wallet number = "+debitedWalletNumber,debitedWalletNumber);
         }
         // post ledger entry
-        LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey);
+        LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id);
         ledgerEntryRepository.save(entry);
-
+        return entry;
     }
 
     @Transactional
-    public void topUp(String wallet_number,Long amount,String idempotencyKey){
-        transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey);
+    public LedgerEntry topUp(String wallet_number,Long amount,String idempotencyKey){
+        return transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey,null);
     }
     @Transactional
-    public void withdraw(String wallet_number,Long amount,String idempotencyKey){
-        transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey);
+    public LedgerEntry withdraw(String wallet_number,Long amount,String idempotencyKey){
+        return transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey,null);
+    }
+    @Transactional
+    public LedgerEntry revers(String original_entry_id, String idempotencyKey){
+        LedgerEntry entry = ledgerEntryRepository.findByEntryId(original_entry_id)
+                .orElseThrow(()-> new EntryNotFoundException(original_entry_id));
+        return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id);
     }
 
     public Wallet createWallet(String cif,String wallet_name){
@@ -95,7 +101,7 @@ public class WalletService {
             }
             String wallet_number = String.format("%02d", index) + cif;
 
-            Wallet wallet = new Wallet(wallet_number,cif,wallet_name, 0L, WalletStatus.Pending,false,null); // db will take care of date
+            Wallet wallet = new Wallet(wallet_number,cif,wallet_name, 0L, WalletStatus.Pending,false,false,null); // db will take care of date
             try{
                 walletRepository.save(wallet);
                 return wallet;

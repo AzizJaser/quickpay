@@ -1,0 +1,137 @@
+package com.quickpay.billersim;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
+
+/**
+ * The brain of the mock biller (dev/test only; all state in memory, lost on restart).
+ *
+ * Two jobs:
+ *  1. IDEMPOTENCY BY REFERENCE — the contract that makes the bill service's retries safe.
+ *     Once a client reference (ref A) reaches a definite outcome (PAID or FAILED) we store it;
+ *     any later "pay" with the same reference replays the SAME result instead of paying again.
+ *  2. FAULT INJECTION — a tester can force SUCCESS / FAIL / SERVER_ERROR / TIMEOUT (or leave it
+ *     NORMAL, which uses the configured failure-rate) so every branch of the bill-payment flow
+ *     can be exercised deterministically (predict-then-run).
+ */
+@Component
+public class BillerStore {
+
+    // ref A -> settled result. Presence means "this attempt definitely landed" (PAID or FAILED).
+    private final Map<String, PaymentResult> settledByReference = new ConcurrentHashMap<>();
+
+    private volatile Outcome forcedMode = Outcome.NORMAL;
+
+    private final double failureRate;
+    private volatile long delayMs;
+    private final long timeoutSleepMs;
+
+    public BillerStore(@Value("${biller.failure-rate:0.0}") double failureRate,
+                       @Value("${biller.default-delay-ms:0}") long defaultDelayMs,
+                       @Value("${biller.timeout-sleep-ms:65000}") long timeoutSleepMs) {
+        this.failureRate = failureRate;
+        this.delayMs = defaultDelayMs;
+        this.timeoutSleepMs = timeoutSleepMs;
+    }
+
+    /**
+     * Attempt to pay a bill.
+     *  - returns a PAID or FAILED settlement (and stores it for idempotent replay)
+     *  - throws ResponseStatusException(503) for SERVER_ERROR (nothing stored -> unknown outcome)
+     *  - for TIMEOUT, sleeps past the caller's timeout and THEN settles PAID
+     *    (models "it actually went through, you just didn't hear back").
+     */
+    public PaymentResult pay(PaymentRequest req) {
+        // 1. Idempotency: same reference seen before -> replay the stored result, never pay twice.
+        PaymentResult existing = settledByReference.get(req.reference());
+        if (existing != null) {
+            return existing;
+        }
+
+        // 2. Artificial latency (a slow biller).
+        sleep(delayMs);
+
+        // 3. Decide what happens.
+        Outcome outcome = (forcedMode == Outcome.NORMAL)
+                ? (ThreadLocalRandom.current().nextDouble() < failureRate ? Outcome.FAIL : Outcome.SUCCESS)
+                : forcedMode;
+
+        switch (outcome) {
+            case SERVER_ERROR ->
+                // 5xx: the caller does NOT know if it landed. We store NOTHING, so a later inquiry
+                // returns NOT_FOUND and a retry re-processes. "Unknown, and actually not paid."
+                    throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "biller temporarily unavailable");
+            case TIMEOUT -> {
+                // Sleep past the caller's timeout, THEN settle it as paid. The caller gave up, but
+                // the payment really went through — a later inquiry by reference will reveal PAID.
+                sleep(timeoutSleepMs);
+                return settle(req, "PAID", "BILR-" + hex());
+            }
+            case FAIL -> {
+                return settle(req, "FAILED", null);   // definite failure, money not taken
+            }
+            default -> {
+                return settle(req, "PAID", "BILR-" + hex());
+            }
+        }
+    }
+
+    /** Inquiry by the bill service's reference. A null result here means NOT_FOUND (never settled). */
+    public PaymentResult inquire(String reference) {
+        return settledByReference.get(reference);
+    }
+
+    // ---- control panel ----
+
+    public void setMode(Outcome mode, Long delayMsOverride) {
+        this.forcedMode = (mode == null) ? Outcome.NORMAL : mode;
+        if (delayMsOverride != null) {
+            this.delayMs = delayMsOverride;
+        }
+    }
+
+    public Map<String, Object> state() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("forcedMode", forcedMode);
+        m.put("delayMs", delayMs);
+        m.put("failureRate", failureRate);
+        m.put("settledReferences", settledByReference);
+        return m;
+    }
+
+    public void reset() {
+        settledByReference.clear();
+        forcedMode = Outcome.NORMAL;
+    }
+
+    // ---- helpers ----
+
+    private PaymentResult settle(PaymentRequest req, String status, String billerTxnId) {
+        PaymentResult result = new PaymentResult(req.reference(), req.billNumber(), status, billerTxnId, null);
+        settledByReference.put(req.reference(), result);
+        return result;
+    }
+
+    private static String hex() {
+        return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    private static void sleep(long ms) {
+        if (ms <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}

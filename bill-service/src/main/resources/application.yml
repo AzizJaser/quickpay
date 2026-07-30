@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: bill-service
+
+  datasource:
+    # Bill service owns its OWN database (data ownership) — separate from the wallet's.
+    url: jdbc:postgresql://localhost:5433/bill
+    username: bill
+    password: bill
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema; Hibernate only validates. Never 'update' in a money system.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false   # keep transactions inside the service layer
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration   # your V1__... migrations go here
+
+server:
+  port: 8081   # wallet=8080, gateway-sim=9090, biller-sim=9091, bill-service=8081
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+
+# Downstream services the bill service calls over HTTP. Wire the RestClient(s) yourself;
+# these are just the base URLs (overridable by env var for docker/CI).
+quickpay:
+  wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080}
+  biller-base-url: ${BILLER_BASE_URL:http://localhost:9091}
+
+bill:
+  eod-interval-ms: ${BILL_RECONCILIATION_INTERVAL_MS:10000}

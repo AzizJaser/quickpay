@@ -20,7 +20,7 @@ import java.util.UUID;
 public class LedgerEntry {
 
     @Id
-    private String entry_id;
+    private String entryId;
 
     private String debited_wallet_number;
 
@@ -32,15 +32,18 @@ public class LedgerEntry {
 
     private String idempotencyKey;
 
+    private String reversesEntryId;
+
     @Column(insertable = false, updatable = false)
     private LocalDateTime created_at;
 
-    public LedgerEntry(String debited_wallet_number,String credited_wallet_number, Long debited_amount, Long credited_amount,String idempotencyKey){
-        this.entry_id = UUID.randomUUID().toString();
+    public LedgerEntry(String debited_wallet_number,String credited_wallet_number, Long debited_amount, Long credited_amount,String idempotencyKey, String reversesEntryId){
+        this.entryId = UUID.randomUUID().toString();
         this.debited_wallet_number = debited_wallet_number;
         this.credited_wallet_number = credited_wallet_number;
         this.debited_amount = debited_amount;
         this.credited_amount = credited_amount;
         this.idempotencyKey = idempotencyKey;
+        this.reversesEntryId = reversesEntryId;
     }
 }

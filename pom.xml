@@ -19,7 +19,9 @@
 
     <modules>
         <module>wallet-service</module>
+        <module>bill-service</module>
         <module>scaffolding/gateway-simulator</module>
+        <module>scaffolding/biller-simulator</module>
     </modules>
 
 </project>

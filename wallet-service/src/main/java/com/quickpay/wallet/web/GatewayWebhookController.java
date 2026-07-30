@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quickpay.wallet.dto.request.WebhookRequest;
 import com.quickpay.wallet.exception.DuplicatedEntryException;
 import com.quickpay.wallet.service.WalletService;
+import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
