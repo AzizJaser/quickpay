@@ -1,5 +1,12 @@
 # CLAUDE.md — rules for AI agents working in this repo
 
+## Read this first
+**`PROJECT_PLAN.md` (repo root) is the living plan and session handover.** Read it at
+the start of every session before doing anything else: it holds the current state, the
+target state, the open decisions, the ordered backlog, and the "NEXT ACTION" line.
+When a milestone lands or a decision is made, **update `PROJECT_PLAN.md` in the same
+commit** — it is how the project survives lost sessions and context resets.
+
 This is a LEARNING project. The human is a junior solution architect
 learning production engineering by building this himself. The learning
 value lives in him writing the code — protect it.
