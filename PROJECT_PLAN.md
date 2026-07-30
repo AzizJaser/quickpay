@@ -117,6 +117,25 @@ Simulators mock *external* systems and do **not** count against the 4-service bu
 
 Conservation invariant: `inward + customers + suspense + outward + biller = 0`.
 
+#### Wallet baseline — settled vs still open (2026-07-30)
+
+**The wallet's money model is BASELINED and will not be redesigned.** Settled: the
+two-leg ledger and DB-enforced conservation, idempotency, lock ordering, the
+reconciliation job, the four system accounts and the `is_internal`/`allows_negative`
+model, reserve/capture/reverse, V1–V10, 8/8 tests in CI. Nothing remaining on this plan
+requires rethinking any of it — future work builds *on top*.
+
+**But the wallet service is NOT closed.** Four planned items will reopen its code:
+1. **Notifications (req 5)** — the wallet must *publish an event* when money moves
+   (RabbitMQ publisher, likely an outbox). New code inside the wallet, not just a new service.
+2. **Load test (Phase 8)** — targets P2P at 500 TPS, which *is* the wallet; expect index,
+   pool and lock-contention work.
+3. **Sabotage (Phase 7)** — aimed largely at the money core; expect findings.
+4. **Auth (req 1)** — the wallet API is currently wide open (see Bucket D).
+
+Plus two smaller ones: **history/statement** may live in the wallet (undecided — that's
+the service-budget call), and **V9's `UNIQUE(reverses_entry_id)` has no automated test**.
+
 ### Bill service (the saga)
 ```
 create (Pending, write-ahead, COMMITTED first)
@@ -196,9 +215,39 @@ Work in **one increment per session**. Do not open several at once.
 - [ ] **History / statement (req 6)** — decide service #4 vs inside wallet first.
 
 ### Bucket B — prove it (Phases 7–8)
+- [ ] **⚠️ Traceability — correlation ids in logs. DO THIS *BEFORE* THE SABOTAGE PASS.**
+      Not a nicety: sabotage deliberately breaks a system spanning three processes, an
+      `@Async` thread and a scheduled sweep. Answering *"what happened to this one
+      payment?"* means correlating log lines across bill-service, wallet and the
+      simulator — archaeology without a shared id. It is also the one cross-cutting
+      concern that is **expensive to retrofit** (touches every log statement and every
+      outbound call), unlike auth which is a single filter.
+      *Cheap version:* accept-or-generate an `X-Correlation-Id` at the edge → put it in
+      MDC → add to the log pattern → forward as a header on both `RestClient`s.
+      *Already have (accidentally):* the wallet's idempotency keys embed the paymentId
+      (`r`/`c`/`v` + hyphen-stripped id), so a bill's ledger legs are already findable
+      from its `paymentId`. That audit trail exists — it just isn't in the logs.
 - [ ] **Sabotage pass (Phase 7)** — ~12 failure scenarios, a written prediction for each,
       run, and explain every surprise. Formalizes what's been done ad hoc.
 - [ ] **Load test (Phase 8)** — k6 against P2P, find breaking TPS, fix, explain.
+      Note: this reopens the **wallet** (indexes, pool sizing, lock contention).
+
+### Bucket D — cross-cutting concerns (deliberately deferred, NOT forgotten)
+
+**Decision (2026-07-30): defer what is additive, do early what is pervasive.**
+
+- [ ] **Auth / security (req 1) — DEFERRED to near the end, on purpose.**
+      Both services are currently wide open (no authn/authz on any endpoint).
+      *Why defer:* it is purely additive — a filter in front of the controllers that
+      touches no schema, no ledger, no saga logic, so nothing built now becomes wrong
+      when it lands. The brief itself says keep it thin (learner has built JWT before),
+      so the learning value is low. And adding it now puts a token in front of every
+      manual curl and every sabotage scenario — friction on the exact loop producing
+      the learning.
+      *Risk being accepted:* "later" can become "never." If it is still undone when the
+      project wraps, **close it explicitly** as out of scope rather than letting it rot.
+- [ ] **Structured logging** — logging exists (`logger.info/warn/error`) but is
+      unstructured and uncorrelated. Pairs with the correlation-id item in Bucket B.
 
 ### Bucket C — design debt (Phases 0–2, 4)
 - [ ] Sponsor interrogation + decisions log (Phase 0)
@@ -326,4 +375,5 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-07-30 | Cross-cutting decisions recorded (Bucket D): **auth deferred** (additive, low learning value, adds friction to every test) but **traceability/correlation-ids moved ahead of the sabotage pass** (pervasive, expensive to retrofit, and Phase 7 is unreadable without it). Added the wallet baseline note — money model settled, service still reopened by notifications, load test, sabotage and auth. |
 | 2026-07-30 | `feat/biller-simulator` merged to `main` via PR #3 — bill-service, wallet V7–V10 and both simulators are now on `main`. NEXT ACTION moved to bill-service automated tests (six tests, one at a time). |
