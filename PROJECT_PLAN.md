@@ -5,59 +5,65 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-07-30 (rev 2 — amended after senior plan review)**
+> Last updated: **2026-08-01 (rev 3 — bill-service tests closed)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Step 0 (5 minutes, before any test is written): answer the double-resolve prediction
-in §"Bucket A / test 7" below, in writing.** Then:
+**The DECISION SESSION — resolve open decisions #1 (RabbitMQ divergence) and #2
+(service budget). Both gate the notifications build, so nothing else in Bucket A can
+start until they are logged.**
 
-**Write automated tests for `bill-service` — ONE test at a time.** It currently has
-zero, so CI passes trivially and nothing guards the saga against regressions. This is
-the single biggest quality gap in the project.
+Learner drafts the sponsor-decision entry for the RabbitMQ divergence with reasoning;
+AI plays the sponsor and pushes back. Then the decomposition call: is notifications
+service #3, and does history become #4 or live inside an existing service (max 4).
+**Output: two entries in the sponsor decisions log** (which is still empty — these
+would be its first).
 
-**Approach for the first pass:** service-layer integration tests (Testcontainers for
-the real Postgres, like `WalletServiceIntegrationTest`) with the two HTTP clients
-mocked — `@MockBean WalletClient` and `@MockBean BillerClient`. Fast, and it targets
-the logic that actually carries risk (guards, state transitions, `resolve` branching)
-rather than HTTP plumbing. Wiremock can come later if real-HTTP coverage is wanted.
+---
 
-**Write them in this order, one per sitting, reviewed before moving on**
-*(rev 2: extended from six to eight — the review found the original list guarded the
-saga's limbs but not its heart: the UNKNOWN branch and the double-resolve guard are
-where "never lose money, never show paid falsely" actually lives)*:
+<details>
+<summary><b>✅ CLOSED 2026-08-01 — bill-service tests (was the previous NEXT ACTION)</b></summary>
 
-1. ✅ **DONE** — `createPayment` dedup — same client `Idempotency-Key` returns the same
-   record, no second row; a new key creates a new one.
-   *(two methods: `createPayment_NewKey`, `createPayment_replaySameKey_returnsSameRecord`)*
-2. ✅ **DONE** — `reserveFunds` happy — wallet returns an entry id → bill becomes
-   `Reserved` and stores `entry_id`. *(`reserveFunds_walletAccepts_marksReserved`)*
-3. ✅ **DONE** — `reserveFunds` declined — wallet client throws
-   `ReserveDeclinedException` → bill becomes `Rejected`, `entry_id` stays null.
-   *(`reserveFunds_walletDeclines_marksRejected`)*
-4. ◀ **NEXT** — `resolve` PAID → capture called once, bill `Paid`.
-5. `resolve` FAILED → reverse called once, bill `Rejected`.
-6. **UNKNOWN reaction** — biller client throws (`ResourceAccessException` timeout /
-   `HttpServerErrorException` 5xx) → bill **stays `Reserved`**, `entry_id` intact,
-   `verifyNoInteractions` on capture AND reverse (no money moved, no guess made).
-   *This is the test the coverage-boundary section already described in the present
-   tense; now it actually exists in the list.*
-7. **Double-resolve guard** — `resolve` reached twice for the same bill (live `@Async`
-   path and EOD sweep are a designed-in race): second call is a no-op, bill status
-   sane, wallet capture invoked **exactly once**.
-   **Prediction required before designing this test** (predict-then-run, Rule 2):
-   which mechanism guards it today — a bill-status check inside `resolve`, a row lock,
-   or *only* the wallet's `c`+paymentId idempotency downstream?
-   > _Learner's written prediction: _____________________ (fill before the session)_
-   *Same sitting:* the wallet-side **V9 `UNIQUE(reverses_entry_id)`** double-reverse
-   test — same "second money movement must be impossible" family.
-8. Sweep picks up a `Reserved` bill, inquires, and resolves it. *(Moved last: it
-   builds on the parked state that #6 proves.)*
+**7 tests green, committed `8d1616b`.** Written one at a time with review between each.
 
-⚠️ Reuse the wallet's hard-won test lesson: the Testcontainers DB is shared across test
-methods with no rollback, so **every test needs unique idempotency keys and CIFs**.
+| # | Test | |
+|---|---|---|
+| 1 | `createPayment` new key — write-ahead, no client touched | ✅ |
+| 1b | `createPayment` replay — same record, no second row, stored amount wins | ✅ |
+| 2 | `reserveFunds` accepted — `Reserved`, entry_id stored, derived `r`-key | ✅ |
+| 3 | `reserveFunds` declined — `Rejected`, entry_id null | ✅ |
+| 4 | `resolve` PAID — capture once, reverse never, `Paid` | ✅ |
+| 5 | `resolve` FAILED — reverse once **with the reserve's entry_id**, capture never | ✅ |
+| 7 | double-resolve — capture must fire exactly once | ✅ (after fixes) |
+| 6 | UNKNOWN reaction | ⏭️ **skipped, deliberately** |
+| 8 | Sweep | ⏭️ **skipped, deliberately** |
+
+**Why #6 and #8 were skipped (a decision, not drift):** both cover behaviour already
+proven by hand on 1–2 July, so they buy regression cover rather than knowledge, and the
+marginal learning was nil once `thenReturn` / `thenThrow` / `verify` / `never()` were
+understood. #6 additionally needs a `SyncTaskExecutor` `@TestConfiguration` to make
+`@Async` deterministic. Revisit if either path changes.
+
+**What test #7 found — the payoff of the whole exercise.** It failed on first run
+(`TooManyActualInvocations: wanted 1, was 2`) and drove three production fixes:
+1. `resolve` had **no re-entry guard** — it captured twice. Prediction was correct: the
+   only protection was the wallet's `c`+paymentId key downstream. Guard added.
+   ⚠️ The guard does **not** close the true race — the status check and the money move
+   are separated by a biller call that can block up to 60s, and the sweep holds a stale
+   detached snapshot — so **the wallet's `UNIQUE(idempotency_key)` remains the real
+   guarantee**. This is the golden-rule-in-the-database philosophy paying off.
+2. **A 409 was being treated as a failure.** It means "already applied" = success. It
+   surfaced as `HttpClientErrorException`, uncaught by `payBiller` *and* the sweep.
+   Now handled on both `capture` and `reverse` in `WalletClient`.
+3. **The sweep had no batch isolation** — one failing bill aborted the whole run, in the
+   one component whose entire job is recovery. Now per-bill isolated (specific catches
+   kept for meaningful logging, plus a catch-all backstop).
+
+Money was never at risk at any point — the wallet's UNIQUE constraint held throughout.
+
+</details>
 
 ---
 
@@ -128,7 +134,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 | Module | Port | DB | State |
 |---|---|---|---|
 | `wallet-service` | 8080 | `wallet` @ 5432 | ✅ complete, 8/8 tests green, in CI |
-| `bill-service` | 8081 | `bill` @ 5433 | ✅ feature-complete, 🟡 **4 of 8 tests written** (green, in CI) |
+| `bill-service` | 8081 | `bill` @ 5433 | ✅ feature-complete, ✅ **7 tests green** (in CI; 2 deliberately skipped) |
 | `scaffolding/gateway-simulator` | 9090 | — | mock payment gateway (HMAC webhooks) |
 | `scaffolding/biller-simulator` | 9091 | — | mock biller (force PAID/FAIL/SERVER_ERROR/TIMEOUT) |
 
@@ -257,13 +263,10 @@ Work in **one increment per session**. Do not open several at once.
   session as curls, docs and habits encode it.)*
 
 ### Bucket A — finish the build (Phase 6)
-- [ ] **◀ IN PROGRESS — Bill-service automated tests. Items 1–3 done (4 test methods,
-  green, committed `438f43d`); next up is item 4 (`resolve` PAID).** See the NEXT
-  ACTION section at the top for the approach and the ordered list of **eight** items
-  *(rev 2: was six — added #6 UNKNOWN reaction and #7 double-resolve guard; sweep
-  moved last)*. **Write ONE at a time, reviewed before the next. Test #7 requires the
-  written prediction first.**
-- [ ] **Decision session** *(rev 2: pulled forward from Bucket C — open decisions #1
+- [x] ~~Bill-service automated tests~~ — **CLOSED 2026-08-01, 7 green, committed
+  `8d1616b`.** See the collapsed section under NEXT ACTION for what was covered, what
+  was skipped and why, and the three production bugs test #7 uncovered.
+- [ ] **◀ NEXT — Decision session** *(rev 2: pulled forward from Bucket C — open decisions #1
   and #2 gate the notifications build; "decide before building" now has a slot)*:
   learner drafts the sponsor-decision entry for the **RabbitMQ divergence** with
   reasoning; AI plays the sponsor and pushes back. Then the **service-budget /
@@ -446,6 +449,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-01 | **Bill-service tests closed** — 7 green (`8d1616b`); #6 and #8 deliberately skipped (manually-verified behaviour, nil marginal learning). Test #7 found three real defects and drove fixes: no re-entry guard in `resolve`, 409 mistreated as failure, no batch isolation in the sweep. NEXT ACTION moved to the decision session. |
 | 2026-07-30 | Cross-cutting decisions recorded (Bucket D): **auth deferred** (additive, low learning value, adds friction to every test) but **traceability/correlation-ids moved ahead of the sabotage pass** (pervasive, expensive to retrofit, and Phase 7 is unreadable without it). Added the wallet baseline note — money model settled, service still reopened by notifications, load test, sabotage and auth. |
 | 2026-07-30 | `feat/biller-simulator` merged to `main` via PR #3 — bill-service, wallet V7–V10 and both simulators are now on `main`. NEXT ACTION moved to bill-service automated tests (six tests, one at a time). |
 | 2026-07-30 | **rev 2 — senior plan review absorbed.** Tests extended 6→8 (#6 UNKNOWN reaction, #7 double-resolve guard + V9 rider; sweep moved last; prediction placeholder added). **Decision session** created in Bucket A (RabbitMQ divergence + service budget) and gated ahead of notifications. **DEFINITION OF DONE** added (draft, pending learner's wording). `/bill/reserve` rename promoted to Immediate. Phase 8 now requires a written breaking-TPS + bottleneck prediction before k6 runs. |
