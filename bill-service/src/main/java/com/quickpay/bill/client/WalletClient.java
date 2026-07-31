@@ -30,6 +30,9 @@ public class WalletClient {
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(new TransferRequest(debited,credited,amount))
                 .retrieve()
+                .onStatus(status -> status.value()==409, ((request, response) -> {
+                    return;
+                }))
                 .body(TransferResponse.class);
     }
 
@@ -43,6 +46,9 @@ public class WalletClient {
                 .retrieve()
                 .onStatus(status -> status.value() == 400, ((request, response) -> {
                     throw new ReserveDeclinedException("wallet number '"+debited+"' declined to reserve");
+                }))
+                .onStatus(status -> status.value()==409, ((request, response) -> {
+                    return;
                 }))
                 .body(TransferResponse.class);
     }
@@ -63,6 +69,9 @@ public class WalletClient {
                 .retrieve()
                 .onStatus(status -> status.value() == 400, ((request, response) -> {
                     throw new ReserveDeclinedException("revers was decline for entry Id number "+originalEntryId);
+                }))
+                .onStatus(status -> status.value()==409, ((request, response) -> {
+                    return;
                 }))
                 .body(TransferResponse.class);
     }

@@ -3,8 +3,10 @@ package com.quickpay.bill;
 import com.quickpay.bill.client.BillerClient;
 import com.quickpay.bill.client.WalletClient;
 import com.quickpay.bill.domain.Bill;
+import com.quickpay.bill.dto.response.BillerResult;
 import com.quickpay.bill.dto.response.TransferResponse;
 import com.quickpay.bill.enums.BillStatus;
+import com.quickpay.bill.enums.BillerStatus;
 import com.quickpay.bill.exception.ReserveDeclinedException;
 import com.quickpay.bill.repository.BillRepository;
 import com.quickpay.bill.service.BillService;
@@ -141,5 +143,73 @@ public class BillServiceIntegrationTest {
         assertNull(fromDB.getEntryId());
         verifyNoInteractions(billerClient);
     }
+
+    @Test
+    public void billerAccept_reservedFunds_marksPaid(){
+        //ARRANGE : create bill -> reserve (customer -> suspense)
+
+        Bill bill = billService.createPayment("BILL-REF-05","000000000001",500L,"IDMP-KEY-05");
+        assertEquals(BillStatus.Pending, bill.getStatus());
+        String reserveKey = "r" + bill.getPaymentId().replace("-","");
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey)).thenReturn(new TransferResponse("ENTRY-456","rIDMP-KEY-05"));
+        Bill reserved = billService.reserveFunds(bill);
+        assertEquals(BillStatus.Reserved, reserved.getStatus());
+        String captureKey = "c" + reserved.getPaymentId().replace("-","");
+
+        // ACT: capture (suspense -> biller) 'assuming biller returned PAID'
+        Bill captured = billService.resolve(reserved, new BillerResult(reserved.getBillReference(),BillerStatus.PAID,"BILR-1"));
+        Bill fromDB = billRepository.findByPaymentId(reserved.getPaymentId()).orElseThrow();
+        assertEquals(BillStatus.Paid, fromDB.getStatus());
+
+        // ASSERT
+        verify(walletClient).capture(reserved.getAmount(), captureKey);
+        verify(walletClient,never()).reverse(anyString(),anyString());
+    }
+
+    @Test
+    public void billerReject_marksRejected(){
+        // ARRANGE: create bill -> reserve (customer -> suspense)
+        Bill bill = billService.createPayment("BILL-REF-06","000000000001",500L,"IDMP-KEY-06");
+        assertEquals(BillStatus.Pending, bill.getStatus());
+        String reserveKey = "r" + bill.getPaymentId().replace("-","");
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey)).thenReturn(new TransferResponse("ENTRY-456","rIDMP-KEY-06"));
+        Bill reserved = billService.reserveFunds(bill);
+        assertEquals(BillStatus.Reserved, reserved.getStatus());
+
+        // ACT: biller reject the payment -> reveres the payment (suspense -> customer) 'assume the biller rejected it'
+        Bill reversed = billService.resolve(reserved,new BillerResult(reserved.getBillReference(),BillerStatus.FAILED,"BILR-02"));
+        Bill fromDB = billRepository.findByPaymentId(reversed.getPaymentId()).orElseThrow();
+        String reversKey = "v" + fromDB.getPaymentId().replace("-","");
+        // ASSERT
+        assertEquals(BillStatus.Rejected, fromDB.getStatus());
+        verify(walletClient).reverse("ENTRY-456", reversKey);
+        verify(walletClient,never()).capture(anyLong(),anyString());
+    }
+
+    @Test
+    public void resolve_calledTwice_capturesTwice(){
+        //ARRANGE: create bill and reserve (customer -> suspense)
+        Bill bill = billService.createPayment("BILL-REF-07","000000000001",500L,"IDMP-KEY-07");
+        assertEquals(BillStatus.Pending, bill.getStatus());
+        String reserveKey = "r" + bill.getPaymentId().replace("-","");
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey)).thenReturn(new TransferResponse("ENTRY-321","rIDMP-KEY-07"));
+        Bill reserved = billService.reserveFunds(bill);
+        assertEquals(BillStatus.Reserved, reserved.getStatus());
+        String captureKey = "c" + reserved.getPaymentId().replace("-","");
+
+        // ACT: pay twice 'assume the biller returned PAID in both'
+        Bill paid = billService.resolve(reserved,new BillerResult(reserved.getBillReference(),BillerStatus.PAID,"BILR-03"));
+        Bill paid2 = billService.resolve(reserved,new BillerResult(reserved.getBillReference(),BillerStatus.PAID,"BILR-03"));
+        when(walletClient.capture(paid.getAmount(),captureKey)).thenReturn(new TransferResponse("ENTRY-321","rIDMP-KEY-07"));
+        Bill fromDB = billRepository.findByPaymentId(paid.getPaymentId()).orElseThrow();
+        Bill fromDB2 = billRepository.findByPaymentId(paid2.getPaymentId()).orElseThrow();
+
+        // ASSERT
+        assertEquals(BillStatus.Paid,paid.getStatus());
+        assertEquals(paid,paid2);
+        verify(walletClient).capture(paid.getAmount(),captureKey);
+
+    }
 }
+
 
