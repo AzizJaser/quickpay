@@ -5,23 +5,27 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-01 (rev 4 — service decomposition decided; AI feature deferred)**
+> Last updated: **2026-08-01 (rev 5 — RabbitMQ decision made; ADR-0005; sponsor log opened)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Resolve open decision #1 — the RabbitMQ divergence.** It is now the *only* thing
-gating the notifications build, and history (#4) is blocked behind it too.
+**Build notifications (service #3, req 5)** — the first RabbitMQ work.
 
-The brief names RabbitMQ a hard constraint; the bill service uses in-memory `@Async` +
-a DB sweep instead. Either **remediate** (introduce RabbitMQ) or **change the target**
-(formally accept `@Async` at this scale) — but log it. Learner drafts the entry with
-reasoning; AI plays the sponsor and pushes back. **Output: an entry in the sponsor
-decisions log**, which is still empty.
+**Step 0, before any publishing code: decide reliable publishing.** Adopting a broker
+does not solve this by itself. If a service commits a money movement and *then* publishes,
+a failed publish means money moved with **no event** — history is silently wrong forever
+and no notification is ever sent. The expected answer is the **transactional outbox**
+(write the event to an `outbox` table in the *same transaction* as the money move; a
+poller ships it to the broker and marks it sent) — the same write-ahead shape already
+used for the bill record. Decide it, and log it as ADR-0006. See ADR-0005's open
+follow-up.
 
-*(Decision #2, the service budget, was settled 2026-08-01 — see §5. Notifications is
-#3, history is #4 as a read model, and the budget is now full.)*
+Then: RabbitMQ in docker-compose, the event contract (who publishes what), the
+notifications module, and consumers. **One increment per session.**
+
+*(Open decisions #1 and #2 were both resolved 2026-08-01 — see §5 and ADR-0005.)*
 
 ---
 
@@ -235,11 +239,16 @@ be torn up to reach the target. The baseline conforms to the target architecture
    **(b) change the target** — formally decide `@Async` + DB sweep is sufficient at this
    scale and log it as an architecture/sponsor decision. *Leaving it undeclared is the
    only wrong answer.*
-   **→ rev 2: scheduled — resolved in the Bucket A decision session, BEFORE the
-   notifications build. This is a change event: mid-work divergence from a stated
-   constraint → confirm with the sponsor and log the direction; don't quietly build the
-   preferred answer. Learner drafts the decision entry with reasoning; AI plays the
-   sponsor and pushes back.**
+   **→ RESOLVED 2026-08-01 — see `adr/0005-rabbitmq-for-event-fanout.md` (docs branch)
+   and sponsor decisions log entry #1.** Adopt RabbitMQ for **domain-event fan-out**
+   (wallet + bill publish; notifications + history consume). **Keep the bill service's
+   biller trigger on `@Async` + the EOD sweep** — it is point-to-point to an *external*
+   system, not a fan-out, so a broker adds a hop without adding a guarantee. The rule
+   drawn: *fan-out to internal consumers goes through the broker; point-to-point calls to
+   external systems do not.*
+   ⚠️ **Left open by that ADR — reliable publishing.** A failed publish after a committed
+   money movement loses the event permanently. Transactional outbox expected; decide it
+   before the wallet publishes anything. This is now Step 0 of the notifications build.
 2. ~~**Service budget.**~~ **→ DECIDED 2026-08-01. The budget is now FULL:**
 
    | # | Service | Owns |
@@ -499,6 +508,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-01 | **RabbitMQ decision RESOLVED** (ADR-0005, docs branch): broker for event fan-out; bill's `@Async` biller trigger stays (point-to-point to an external system ≠ fan-out). Sponsor decisions log opened with its first three entries. ⚠️ ADR-0005 leaves **reliable publishing** open — outbox pattern, now Step 0 of the notifications build. NEXT ACTION → notifications (#3). |
 | 2026-08-01 | **Service decomposition DECIDED** (§5 #2): notifications = #3 (req 5 is itself a decomposition instruction), history = #4 as a read model (a statement needs bill context, so it is a join across two owners; also keeps heavy reads off the money core). **Budget now full.** **AI feature raised and DEFERRED** as a candidate (§5 #5) — not in the brief, blocked behind history existing, read-side so it belongs inside #4 and never in the money path. |
 | 2026-08-01 | **Bill-service tests closed** — 7 green (`8d1616b`); #6 and #8 deliberately skipped (manually-verified behaviour, nil marginal learning). Test #7 found three real defects and drove fixes: no re-entry guard in `resolve`, 409 mistreated as failure, no batch isolation in the sweep. NEXT ACTION moved to the decision session. |
 | 2026-07-30 | Cross-cutting decisions recorded (Bucket D): **auth deferred** (additive, low learning value, adds friction to every test) but **traceability/correlation-ids moved ahead of the sabotage pass** (pervasive, expensive to retrofit, and Phase 7 is unreadable without it). Added the wallet baseline note — money model settled, service still reopened by notifications, load test, sabotage and auth. |
