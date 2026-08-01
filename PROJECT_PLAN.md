@@ -5,21 +5,23 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-01 (rev 3 — bill-service tests closed)**
+> Last updated: **2026-08-01 (rev 4 — service decomposition decided; AI feature deferred)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**The DECISION SESSION — resolve open decisions #1 (RabbitMQ divergence) and #2
-(service budget). Both gate the notifications build, so nothing else in Bucket A can
-start until they are logged.**
+**Resolve open decision #1 — the RabbitMQ divergence.** It is now the *only* thing
+gating the notifications build, and history (#4) is blocked behind it too.
 
-Learner drafts the sponsor-decision entry for the RabbitMQ divergence with reasoning;
-AI plays the sponsor and pushes back. Then the decomposition call: is notifications
-service #3, and does history become #4 or live inside an existing service (max 4).
-**Output: two entries in the sponsor decisions log** (which is still empty — these
-would be its first).
+The brief names RabbitMQ a hard constraint; the bill service uses in-memory `@Async` +
+a DB sweep instead. Either **remediate** (introduce RabbitMQ) or **change the target**
+(formally accept `@Async` at this scale) — but log it. Learner drafts the entry with
+reasoning; AI plays the sponsor and pushes back. **Output: an entry in the sponsor
+decisions log**, which is still empty.
+
+*(Decision #2, the service budget, was settled 2026-08-01 — see §5. Notifications is
+#3, history is #4 as a read model, and the budget is now full.)*
 
 ---
 
@@ -238,14 +240,62 @@ be torn up to reach the target. The baseline conforms to the target architecture
    constraint → confirm with the sponsor and log the direction; don't quietly build the
    preferred answer. Learner drafts the decision entry with reasoning; AI plays the
    sponsor and pushes back.**
-2. **Service budget.** Max 4; currently 2 (wallet, bill). Notifications would be #3.
-   Does history become #4, or live inside an existing service? This is Phase-2
-   decomposition work — decide before building.
-   **→ rev 2: scheduled — same Bucket A decision session, same gate.**
+2. ~~**Service budget.**~~ **→ DECIDED 2026-08-01. The budget is now FULL:**
+
+   | # | Service | Owns |
+   |---|---|---|
+   | 1 | `wallet` | money movements — the ledger, balances, system accounts |
+   | 2 | `bill` | bill-payment sagas — payment records, biller references, state machine |
+   | 3 | `notifications` | delivery attempts, retry state, channel config |
+   | 4 | `history` | a **read model** — its own DB, fed by wallet + bill events |
+
+   *Notifications (#3) is forced by requirement 5 itself — "the notification channel
+   fails regularly, that must never block a payment" is a decomposition instruction: a
+   separate failure domain, its own data, reacting to events from **both** other services.*
+
+   *History (#4) is a separate service because a statement is not a ledger dump — a
+   customer needs "paid electricity bill 99887766", which requires joining wallet
+   movements with **bill-service context**. Neither owner can produce that alone, so
+   history is inherently a join across two owners → read model. Second benefit: keeps
+   heavy statement queries off the money core, which matters with P2P targeting 500 TPS.*
+
+   **Two consequences to honour when building #4:**
+   - It **depends on decision #1** — a synced read model needs the event stream, so
+     RabbitMQ must land first. History cannot be built before that is resolved.
+   - **"Synced" means eventually consistent** — separate DB, no FKs to wallet or bill,
+     no cross-service joins. A statement may briefly lag a payment. Accept it explicitly.
+
+   **The budget is spent. Any further service breaks a hard constraint and requires a
+   sponsor decision, not a quiet addition.**
 3. **How much design debt to repay?** Phases 0–2 and 4 were skipped. They're the
    upfront-design muscle the brief exists to train (and map closely to TOGAF ADM
    deliverables). Legitimate to backfill, or to consciously accept the debt.
 4. **Auth.** Requirement 1 mentions thin JWT auth; nothing exists. Services are wide open.
+5. **AI feature — DEFERRED CANDIDATE (raised 2026-08-01).** Not in the sponsor brief;
+   every "AI" mention there refers to the assistant's reviewer/sponsor role, not a
+   product feature. So adding one is a **scope change** and needs a logged sponsor
+   decision, not a quiet build.
+   **Revisit point: once history (#4) is live.** Deferred for one decisive reason —
+   every sensible version (categorisation, summarisation, natural-language query,
+   anomaly flagging) reads **transaction history**, which does not exist yet and is
+   itself blocked behind the RabbitMQ decision and notifications. It cannot be built
+   now regardless of preference.
+   **When revisited, the design is already settled:**
+   - It is **read-side** → it lives **inside service #4**, not beside it. No 5th service.
+   - ⚠️ **Never in the money path.** A probabilistic, slow, occasionally-wrong component
+     must not gate a money movement — that is the opposite of this project's thesis that
+     correctness lives in DB constraints because code can be wrong. Anomaly detection, if
+     built, is **advisory**: it flags for review, it never blocks a transfer.
+   - The LLM API has the **same failure profile as the biller** (slow, flaky, sometimes
+     wrong), so it reuses machinery already built: read timeouts, never-block-the-customer,
+     async, sweep for stragglers. Follow the existing convention and give it a **mock
+     simulator** (configurable delay/failure rate, canned responses) alongside the gateway
+     and biller sims — deterministic tests, no API key.
+   *Judgment recorded at deferral: the project has not yet finished anything at the
+   Definition-of-Done bar (no sabotage log, no load report, 2 of 7 requirements unbuilt),
+   and it teaches a different subject than this project's thesis. If LLM architecture is
+   the actual goal, a small dedicated project serves it better than grafting an endpoint
+   onto a payments lab.*
 
 ---
 
@@ -269,9 +319,9 @@ Work in **one increment per session**. Do not open several at once.
 - [ ] **◀ NEXT — Decision session** *(rev 2: pulled forward from Bucket C — open decisions #1
   and #2 gate the notifications build; "decide before building" now has a slot)*:
   learner drafts the sponsor-decision entry for the **RabbitMQ divergence** with
-  reasoning; AI plays the sponsor and pushes back. Then the **service-budget /
-  decomposition call** for notifications (#3?) and history (#4 vs inside wallet).
-  Output: two entries in the sponsor decisions log. **Gates everything below.**
+  reasoning; AI plays the sponsor and pushes back. Output: an entry in the sponsor
+  decisions log. **Gates everything below.** *(The service-budget half of this session
+  was settled 2026-08-01 — see §5 decision #2.)*
 - [ ] **Notifications (req 5)** — the natural home for **RabbitMQ**. Must never block or
   fail a payment. Likely service #3.
 - [ ] **History / statement (req 6)** — per the decision session's call.
@@ -449,6 +499,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-01 | **Service decomposition DECIDED** (§5 #2): notifications = #3 (req 5 is itself a decomposition instruction), history = #4 as a read model (a statement needs bill context, so it is a join across two owners; also keeps heavy reads off the money core). **Budget now full.** **AI feature raised and DEFERRED** as a candidate (§5 #5) — not in the brief, blocked behind history existing, read-side so it belongs inside #4 and never in the money path. |
 | 2026-08-01 | **Bill-service tests closed** — 7 green (`8d1616b`); #6 and #8 deliberately skipped (manually-verified behaviour, nil marginal learning). Test #7 found three real defects and drove fixes: no re-entry guard in `resolve`, 409 mistreated as failure, no batch isolation in the sweep. NEXT ACTION moved to the decision session. |
 | 2026-07-30 | Cross-cutting decisions recorded (Bucket D): **auth deferred** (additive, low learning value, adds friction to every test) but **traceability/correlation-ids moved ahead of the sabotage pass** (pervasive, expensive to retrofit, and Phase 7 is unreadable without it). Added the wallet baseline note — money model settled, service still reopened by notifications, load test, sabotage and auth. |
 | 2026-07-30 | `feat/biller-simulator` merged to `main` via PR #3 — bill-service, wallet V7–V10 and both simulators are now on `main`. NEXT ACTION moved to bill-service automated tests (six tests, one at a time). |
