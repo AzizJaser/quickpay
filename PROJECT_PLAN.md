@@ -314,7 +314,9 @@ Work in **one increment per session**. Do not open several at once.
 
 ### Immediate
 - [x] ~~Merge `feat/biller-simulator` → `main`~~ — **done 2026-07-30 via PR #3.**
-  `main` now contains bill-service, wallet V7–V10, and both simulators.
+- [x] ~~Merge `test/bill-service` → `main`~~ — **done 2026-08-01 via PR #4.** `main` now
+  holds the 7 bill-service tests, the three fixes they drove, and plan revs 2–5.
+  Verified green on `main` after the merge: wallet 8/8, bill 7/7.
 - [ ] **Rename `POST /bill/reserve` → `POST /bill/payments`** (10 min — it runs the
   whole payment; the name lies to exactly the cold reader this plan targets).
   Update the smoke-test snippet in §7 and any docs **in the same commit**.
@@ -508,6 +510,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-01 | `test/bill-service` merged to `main` via PR #4; full suite green on main (wallet 8/8, bill 7/7). |
 | 2026-08-01 | **RabbitMQ decision RESOLVED** (ADR-0005, docs branch): broker for event fan-out; bill's `@Async` biller trigger stays (point-to-point to an external system ≠ fan-out). Sponsor decisions log opened with its first three entries. ⚠️ ADR-0005 leaves **reliable publishing** open — outbox pattern, now Step 0 of the notifications build. NEXT ACTION → notifications (#3). |
 | 2026-08-01 | **Service decomposition DECIDED** (§5 #2): notifications = #3 (req 5 is itself a decomposition instruction), history = #4 as a read model (a statement needs bill context, so it is a join across two owners; also keeps heavy reads off the money core). **Budget now full.** **AI feature raised and DEFERRED** as a candidate (§5 #5) — not in the brief, blocked behind history existing, read-side so it belongs inside #4 and never in the money path. |
 | 2026-08-01 | **Bill-service tests closed** — 7 green (`8d1616b`); #6 and #8 deliberately skipped (manually-verified behaviour, nil marginal learning). Test #7 found three real defects and drove fixes: no re-entry guard in `resolve`, 409 mistreated as failure, no batch isolation in the sweep. NEXT ACTION moved to the decision session. |
