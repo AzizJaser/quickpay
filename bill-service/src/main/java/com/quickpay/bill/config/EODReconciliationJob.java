@@ -45,6 +45,8 @@ public class EODReconciliationJob {
                 // OPS ticket
             } catch (ResourceAccessException e){
                 logger.error("unable to connect to the biller ...");
+            }catch (Exception e){
+                logger.error("unable to resolve bill "+bill.getPaymentId());
             }
         }
 

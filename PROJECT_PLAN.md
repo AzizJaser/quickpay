@@ -5,35 +5,85 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-07-30**
+> Last updated: **2026-08-01 (rev 5 — RabbitMQ decision made; ADR-0005; sponsor log opened)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Write automated tests for `bill-service` — ONE test at a time.** It currently has
-zero, so CI passes trivially and nothing guards the saga against regressions. This is
-the single biggest quality gap in the project.
+**Build notifications (service #3, req 5)** — the first RabbitMQ work.
 
-**Approach for the first pass:** service-layer integration tests (Testcontainers for
-the real Postgres, like `WalletServiceIntegrationTest`) with the two HTTP clients
-mocked — `@MockBean WalletClient` and `@MockBean BillerClient`. Fast, and it targets
-the logic that actually carries risk (guards, state transitions, `resolve` branching)
-rather than HTTP plumbing. Wiremock can come later if real-HTTP coverage is wanted.
+**Step 0, before any publishing code: decide reliable publishing.** Adopting a broker
+does not solve this by itself. If a service commits a money movement and *then* publishes,
+a failed publish means money moved with **no event** — history is silently wrong forever
+and no notification is ever sent. The expected answer is the **transactional outbox**
+(write the event to an `outbox` table in the *same transaction* as the money move; a
+poller ships it to the broker and marks it sent) — the same write-ahead shape already
+used for the bill record. Decide it, and log it as ADR-0006. See ADR-0005's open
+follow-up.
 
-**Write them in this order, one per sitting, reviewed before moving on:**
-1. `createPayment` dedup — same client `Idempotency-Key` returns the same record, no
-   second row; a new key creates a new one.
-2. `reserveFunds` happy — wallet returns an entry id → bill becomes `Reserved` and
-   stores `entry_id`.
-3. `reserveFunds` declined — wallet client throws `ReserveDeclinedException` → bill
-   becomes `Rejected`, `entry_id` stays null.
-4. `resolve` PAID → capture called once, bill `Paid`.
-5. `resolve` FAILED → reverse called once, bill `Rejected`.
-6. Sweep picks up a `Reserved` bill, inquires, and resolves it.
+Then: RabbitMQ in docker-compose, the event contract (who publishes what), the
+notifications module, and consumers. **One increment per session.**
 
-⚠️ Reuse the wallet's hard-won test lesson: the Testcontainers DB is shared across test
-methods with no rollback, so **every test needs unique idempotency keys and CIFs**.
+*(Open decisions #1 and #2 were both resolved 2026-08-01 — see §5 and ADR-0005.)*
+
+---
+
+<details>
+<summary><b>✅ CLOSED 2026-08-01 — bill-service tests (was the previous NEXT ACTION)</b></summary>
+
+**7 tests green, committed `8d1616b`.** Written one at a time with review between each.
+
+| # | Test | |
+|---|---|---|
+| 1 | `createPayment` new key — write-ahead, no client touched | ✅ |
+| 1b | `createPayment` replay — same record, no second row, stored amount wins | ✅ |
+| 2 | `reserveFunds` accepted — `Reserved`, entry_id stored, derived `r`-key | ✅ |
+| 3 | `reserveFunds` declined — `Rejected`, entry_id null | ✅ |
+| 4 | `resolve` PAID — capture once, reverse never, `Paid` | ✅ |
+| 5 | `resolve` FAILED — reverse once **with the reserve's entry_id**, capture never | ✅ |
+| 7 | double-resolve — capture must fire exactly once | ✅ (after fixes) |
+| 6 | UNKNOWN reaction | ⏭️ **skipped, deliberately** |
+| 8 | Sweep | ⏭️ **skipped, deliberately** |
+
+**Why #6 and #8 were skipped (a decision, not drift):** both cover behaviour already
+proven by hand on 1–2 July, so they buy regression cover rather than knowledge, and the
+marginal learning was nil once `thenReturn` / `thenThrow` / `verify` / `never()` were
+understood. #6 additionally needs a `SyncTaskExecutor` `@TestConfiguration` to make
+`@Async` deterministic. Revisit if either path changes.
+
+**What test #7 found — the payoff of the whole exercise.** It failed on first run
+(`TooManyActualInvocations: wanted 1, was 2`) and drove three production fixes:
+1. `resolve` had **no re-entry guard** — it captured twice. Prediction was correct: the
+   only protection was the wallet's `c`+paymentId key downstream. Guard added.
+   ⚠️ The guard does **not** close the true race — the status check and the money move
+   are separated by a biller call that can block up to 60s, and the sweep holds a stale
+   detached snapshot — so **the wallet's `UNIQUE(idempotency_key)` remains the real
+   guarantee**. This is the golden-rule-in-the-database philosophy paying off.
+2. **A 409 was being treated as a failure.** It means "already applied" = success. It
+   surfaced as `HttpClientErrorException`, uncaught by `payBiller` *and* the sweep.
+   Now handled on both `capture` and `reverse` in `WalletClient`.
+3. **The sweep had no batch isolation** — one failing bill aborted the whole run, in the
+   one component whose entire job is recovery. Now per-bill isolated (specific catches
+   kept for meaningful logging, plus a catch-all backstop).
+
+Money was never at risk at any point — the wallet's UNIQUE constraint held throughout.
+
+</details>
+
+---
+
+## ⏹ DEFINITION OF DONE (rev 2 — DRAFT: confirm or rewrite in your own words, then delete this marker)
+
+QuickPay is **done** when all three are true:
+1. All **seven business requirements** are ✅ — or explicitly closed out in the sponsor
+   decisions log (auth's "close it explicitly" clause now has somewhere to point).
+2. The **sabotage log** holds ~12 scenarios, each with a written prediction and every
+   surprise explained.
+3. The **load report** names the breaking TPS on P2P and at least one fix that moved it.
+
+*(Shape lifted from the playbook's own Q1–Q2 milestones. Learning projects don't ship —
+without this line they dissipate.)*
 
 ---
 
@@ -90,7 +140,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 | Module | Port | DB | State |
 |---|---|---|---|
 | `wallet-service` | 8080 | `wallet` @ 5432 | ✅ complete, 8/8 tests green, in CI |
-| `bill-service` | 8081 | `bill` @ 5433 | ✅ feature-complete, **0 automated tests** |
+| `bill-service` | 8081 | `bill` @ 5433 | ✅ feature-complete, ✅ **7 tests green** (in CI; 2 deliberately skipped) |
 | `scaffolding/gateway-simulator` | 9090 | — | mock payment gateway (HMAC webhooks) |
 | `scaffolding/biller-simulator` | 9091 | — | mock biller (force PAID/FAIL/SERVER_ERROR/TIMEOUT) |
 
@@ -116,6 +166,26 @@ Simulators mock *external* systems and do **not** count against the 4-service bu
 | `000000000004` | Biller settlement | ✅ | ❌ | receives captured bill funds |
 
 Conservation invariant: `inward + customers + suspense + outward + biller = 0`.
+
+#### Wallet baseline — settled vs still open (2026-07-30)
+
+**The wallet's money model is BASELINED and will not be redesigned.** Settled: the
+two-leg ledger and DB-enforced conservation, idempotency, lock ordering, the
+reconciliation job, the four system accounts and the `is_internal`/`allows_negative`
+model, reserve/capture/reverse, V1–V10, 8/8 tests in CI. Nothing remaining on this plan
+requires rethinking any of it — future work builds *on top*.
+
+**But the wallet service is NOT closed.** Four planned items will reopen its code:
+1. **Notifications (req 5)** — the wallet must *publish an event* when money moves
+   (RabbitMQ publisher, likely an outbox). New code inside the wallet, not just a new service.
+2. **Load test (Phase 8)** — targets P2P at 500 TPS, which *is* the wallet; expect index,
+   pool and lock-contention work.
+3. **Sabotage (Phase 7)** — aimed largely at the money core; expect findings.
+4. **Auth (req 1)** — the wallet API is currently wide open (see Bucket D).
+
+Plus two smaller ones: **history/statement** may live in the wallet (undecided — that's
+the service-budget call), and **V9's `UNIQUE(reverses_entry_id)` now rides with
+bill-service test #7** (see NEXT ACTION).
 
 ### Bill service (the saga)
 ```
@@ -169,13 +239,72 @@ be torn up to reach the target. The baseline conforms to the target architecture
    **(b) change the target** — formally decide `@Async` + DB sweep is sufficient at this
    scale and log it as an architecture/sponsor decision. *Leaving it undeclared is the
    only wrong answer.*
-2. **Service budget.** Max 4; currently 2 (wallet, bill). Notifications would be #3.
-   Does history become #4, or live inside an existing service? This is Phase-2
-   decomposition work — decide before building.
+   **→ RESOLVED 2026-08-01 — see `adr/0005-rabbitmq-for-event-fanout.md` (docs branch)
+   and sponsor decisions log entry #1.** Adopt RabbitMQ for **domain-event fan-out**
+   (wallet + bill publish; notifications + history consume). **Keep the bill service's
+   biller trigger on `@Async` + the EOD sweep** — it is point-to-point to an *external*
+   system, not a fan-out, so a broker adds a hop without adding a guarantee. The rule
+   drawn: *fan-out to internal consumers goes through the broker; point-to-point calls to
+   external systems do not.*
+   ⚠️ **Left open by that ADR — reliable publishing.** A failed publish after a committed
+   money movement loses the event permanently. Transactional outbox expected; decide it
+   before the wallet publishes anything. This is now Step 0 of the notifications build.
+2. ~~**Service budget.**~~ **→ DECIDED 2026-08-01. The budget is now FULL:**
+
+   | # | Service | Owns |
+   |---|---|---|
+   | 1 | `wallet` | money movements — the ledger, balances, system accounts |
+   | 2 | `bill` | bill-payment sagas — payment records, biller references, state machine |
+   | 3 | `notifications` | delivery attempts, retry state, channel config |
+   | 4 | `history` | a **read model** — its own DB, fed by wallet + bill events |
+
+   *Notifications (#3) is forced by requirement 5 itself — "the notification channel
+   fails regularly, that must never block a payment" is a decomposition instruction: a
+   separate failure domain, its own data, reacting to events from **both** other services.*
+
+   *History (#4) is a separate service because a statement is not a ledger dump — a
+   customer needs "paid electricity bill 99887766", which requires joining wallet
+   movements with **bill-service context**. Neither owner can produce that alone, so
+   history is inherently a join across two owners → read model. Second benefit: keeps
+   heavy statement queries off the money core, which matters with P2P targeting 500 TPS.*
+
+   **Two consequences to honour when building #4:**
+   - It **depends on decision #1** — a synced read model needs the event stream, so
+     RabbitMQ must land first. History cannot be built before that is resolved.
+   - **"Synced" means eventually consistent** — separate DB, no FKs to wallet or bill,
+     no cross-service joins. A statement may briefly lag a payment. Accept it explicitly.
+
+   **The budget is spent. Any further service breaks a hard constraint and requires a
+   sponsor decision, not a quiet addition.**
 3. **How much design debt to repay?** Phases 0–2 and 4 were skipped. They're the
    upfront-design muscle the brief exists to train (and map closely to TOGAF ADM
    deliverables). Legitimate to backfill, or to consciously accept the debt.
 4. **Auth.** Requirement 1 mentions thin JWT auth; nothing exists. Services are wide open.
+5. **AI feature — DEFERRED CANDIDATE (raised 2026-08-01).** Not in the sponsor brief;
+   every "AI" mention there refers to the assistant's reviewer/sponsor role, not a
+   product feature. So adding one is a **scope change** and needs a logged sponsor
+   decision, not a quiet build.
+   **Revisit point: once history (#4) is live.** Deferred for one decisive reason —
+   every sensible version (categorisation, summarisation, natural-language query,
+   anomaly flagging) reads **transaction history**, which does not exist yet and is
+   itself blocked behind the RabbitMQ decision and notifications. It cannot be built
+   now regardless of preference.
+   **When revisited, the design is already settled:**
+   - It is **read-side** → it lives **inside service #4**, not beside it. No 5th service.
+   - ⚠️ **Never in the money path.** A probabilistic, slow, occasionally-wrong component
+     must not gate a money movement — that is the opposite of this project's thesis that
+     correctness lives in DB constraints because code can be wrong. Anomaly detection, if
+     built, is **advisory**: it flags for review, it never blocks a transfer.
+   - The LLM API has the **same failure profile as the biller** (slow, flaky, sometimes
+     wrong), so it reuses machinery already built: read timeouts, never-block-the-customer,
+     async, sweep for stragglers. Follow the existing convention and give it a **mock
+     simulator** (configurable delay/failure rate, canned responses) alongside the gateway
+     and biller sims — deterministic tests, no API key.
+   *Judgment recorded at deferral: the project has not yet finished anything at the
+   Definition-of-Done bar (no sabotage log, no load report, 2 of 7 requirements unbuilt),
+   and it teaches a different subject than this project's thesis. If LLM architecture is
+   the actual goal, a small dedicated project serves it better than grafting an endpoint
+   onto a payments lab.*
 
 ---
 
@@ -185,35 +314,111 @@ Work in **one increment per session**. Do not open several at once.
 
 ### Immediate
 - [x] ~~Merge `feat/biller-simulator` → `main`~~ — **done 2026-07-30 via PR #3.**
-      `main` now contains bill-service, wallet V7–V10, and both simulators.
+  `main` now contains bill-service, wallet V7–V10, and both simulators.
+- [ ] **Rename `POST /bill/reserve` → `POST /bill/payments`** (10 min — it runs the
+  whole payment; the name lies to exactly the cold reader this plan targets).
+  Update the smoke-test snippet in §7 and any docs **in the same commit**.
+  *(rev 2: promoted from "small deferred refinements" — gets more expensive every
+  session as curls, docs and habits encode it.)*
 
 ### Bucket A — finish the build (Phase 6)
-- [ ] **◀ IN PROGRESS — Bill-service automated tests.** Currently zero; CI passes
-      trivially. See the NEXT ACTION section at the top for the approach and the
-      ordered list of six tests. **Write ONE at a time, reviewed before the next.**
+- [x] ~~Bill-service automated tests~~ — **CLOSED 2026-08-01, 7 green, committed
+  `8d1616b`.** See the collapsed section under NEXT ACTION for what was covered, what
+  was skipped and why, and the three production bugs test #7 uncovered.
+- [ ] **◀ NEXT — Decision session** *(rev 2: pulled forward from Bucket C — open decisions #1
+  and #2 gate the notifications build; "decide before building" now has a slot)*:
+  learner drafts the sponsor-decision entry for the **RabbitMQ divergence** with
+  reasoning; AI plays the sponsor and pushes back. Output: an entry in the sponsor
+  decisions log. **Gates everything below.** *(The service-budget half of this session
+  was settled 2026-08-01 — see §5 decision #2.)*
 - [ ] **Notifications (req 5)** — the natural home for **RabbitMQ**. Must never block or
-      fail a payment. Likely service #3.
-- [ ] **History / statement (req 6)** — decide service #4 vs inside wallet first.
+  fail a payment. Likely service #3.
+- [ ] **History / statement (req 6)** — per the decision session's call.
 
 ### Bucket B — prove it (Phases 7–8)
+- [ ] **⚠️ Traceability — correlation ids in logs. DO THIS *BEFORE* THE SABOTAGE PASS.**
+  Not a nicety: sabotage deliberately breaks a system spanning three processes, an
+  `@Async` thread and a scheduled sweep. Answering *"what happened to this one
+  payment?"* means correlating log lines across bill-service, wallet and the
+  simulator — archaeology without a shared id. It is also the one cross-cutting
+  concern that is **expensive to retrofit** (touches every log statement and every
+  outbound call), unlike auth which is a single filter.
+  *Cheap version:* accept-or-generate an `X-Correlation-Id` at the edge → put it in
+  MDC → add to the log pattern → forward as a header on both `RestClient`s.
+  *Already have (accidentally):* the wallet's idempotency keys embed the paymentId
+  (`r`/`c`/`v` + hyphen-stripped id), so a bill's ledger legs are already findable
+  from its `paymentId`. That audit trail exists — it just isn't in the logs.
 - [ ] **Sabotage pass (Phase 7)** — ~12 failure scenarios, a written prediction for each,
-      run, and explain every surprise. Formalizes what's been done ad hoc.
+  run, and explain every surprise. Formalizes what's been done ad hoc.
 - [ ] **Load test (Phase 8)** — k6 against P2P, find breaking TPS, fix, explain.
+  Note: this reopens the **wallet** (indexes, pool sizing, lock contention).
+  **rev 2 — predict-then-run applies to Phase 8 itself:** before k6 fires, write
+  the predicted breaking TPS *and* the predicted first bottleneck. Seed question to
+  answer in that prediction (not before): *which flow holds a hot row under load —
+  P2P or top-up — and why?*
+
+### Bucket D — cross-cutting concerns (deliberately deferred, NOT forgotten)
+
+**Decision (2026-07-30): defer what is additive, do early what is pervasive.**
+
+- [ ] **Auth / security (req 1) — DEFERRED to near the end, on purpose.**
+  Both services are currently wide open (no authn/authz on any endpoint).
+  *Why defer:* it is purely additive — a filter in front of the controllers that
+  touches no schema, no ledger, no saga logic, so nothing built now becomes wrong
+  when it lands. The brief itself says keep it thin (learner has built JWT before),
+  so the learning value is low. And adding it now puts a token in front of every
+  manual curl and every sabotage scenario — friction on the exact loop producing
+  the learning.
+  *Risk being accepted:* "later" can become "never." If it is still undone when the
+  project wraps, **close it explicitly** against the DEFINITION OF DONE — not left to rot.
+- [ ] **Structured logging** — logging exists (`logger.info/warn/error`) but is
+  unstructured and uncorrelated. Pairs with the correlation-id item in Bucket B.
 
 ### Bucket C — design debt (Phases 0–2, 4)
-- [ ] Sponsor interrogation + decisions log (Phase 0)
+*(rev 2: the RabbitMQ and service-budget decisions moved up into the Bucket A decision
+session. The remaining backfill stays here.)*
+- [ ] Sponsor interrogation + decisions log (Phase 0) — the log gets its first two
+  entries from the decision session; the fuller interrogation remains open
 - [ ] Data-ownership map (Phase 1)
 - [ ] Boxes-and-arrows + P2P sequence diagram (Phase 2)
-- [ ] OpenAPI + async message schemas (Phase 4)
+- [ ] OpenAPI + async message schemas (Phase 4) — the async schemas become genuinely
+  useful the moment RabbitMQ lands; consider doing them with notifications
+
+### ⚠️ Known test-coverage boundary — mocks prove *reaction*, not *plumbing*
+
+The bill-service tests use `@MockBean` on `WalletClient` / `BillerClient`. Timeouts and
+5xx are simulated by telling the mock to **throw** (`ResourceAccessException`,
+`HttpServerErrorException`), which correctly tests **our reaction** — bill stays
+`Reserved`/`Pending`, and `verifyNoInteractions` proves no money moved. *(rev 2: this
+is now literally test #6, not just a description.)*
+
+**These tests do NOT cover, and green CI must not be read as covering:**
+- that the **read timeout is actually configured** on the `billerRestClient` bean — if
+  `.withReadTimeout(...)` were deleted, the mock tests still pass while production
+  hangs forever
+- that `.onStatus(422, no-throw)` correctly turns a real 422 into a `FAILED` body
+- that cross-service DTO field names match the other service's JSON
+  (the `billNumber`/`reference`, `original_entry_id` traps)
+
+Those are real-HTTP concerns; only **Wiremock** (a stub server that can delay or return
+503) would guard them. Deliberately deferred.
+
+**Manually verified, but unguarded against regression:** the full TIMEOUT path was
+proven by hand on 2026-07-02 (biller settled PAID after the caller gave up → EOD sweep
+inquired → captured → `Paid`, capture applied exactly once). *(rev 2: tests #6–#8 pin
+the service-layer half of this; the real-HTTP half still waits for Wiremock. Note the
+manual run proved the sequential case only — the concurrent race is test #7's job.)*
+
+- [ ] *(optional, later)* Wiremock tests for the two HTTP clients to close this gap
 
 ### Small deferred refinements
 - [ ] Bill NOT_FOUND age policy: pending > 24h → reverse + raise ops ticket (not built;
-      an unused `LocalDateTime` import in `EODReconciliationJob` marks the spot)
+  an unused `LocalDateTime` import in `EODReconciliationJob` marks the spot)
 - [ ] "OPS ticket" is currently just a log line
-- [ ] V9 `UNIQUE(reverses_entry_id)` has no automated test (needs a shared-suspense
-      double-reverse case)
+- [x] ~~V9 `UNIQUE(reverses_entry_id)` has no automated test~~ — **scheduled with
+  bill-service test #7** (same double-movement family)
 - [ ] `POST /bill/create` is a debug-only endpoint; could be removed
-- [ ] Endpoint `POST /bill/reserve` actually runs the whole payment — misleading name
+- [x] ~~Endpoint `POST /bill/reserve` misleading name~~ — **promoted to Immediate**
 
 ---
 
@@ -244,6 +449,7 @@ curl -s -X POST localhost:8080/v1/transfer/top-up -H 'Content-Type: application/
   -H 'Idempotency-Key: k1' -d '{"wallet_number":"<walletNumber>","amount":5000}'
 
 # 2. pay a bill  -> responds Reserved instantly, flips to Paid async
+#    (note: endpoint rename pending — update this block in the rename commit)
 curl -s -X POST localhost:8081/bill/reserve -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: k2' \
   -d '{"billReference":"BILL-1","walletNumber":"<walletNumber>","amount":2000}'
@@ -302,4 +508,9 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-01 | **RabbitMQ decision RESOLVED** (ADR-0005, docs branch): broker for event fan-out; bill's `@Async` biller trigger stays (point-to-point to an external system ≠ fan-out). Sponsor decisions log opened with its first three entries. ⚠️ ADR-0005 leaves **reliable publishing** open — outbox pattern, now Step 0 of the notifications build. NEXT ACTION → notifications (#3). |
+| 2026-08-01 | **Service decomposition DECIDED** (§5 #2): notifications = #3 (req 5 is itself a decomposition instruction), history = #4 as a read model (a statement needs bill context, so it is a join across two owners; also keeps heavy reads off the money core). **Budget now full.** **AI feature raised and DEFERRED** as a candidate (§5 #5) — not in the brief, blocked behind history existing, read-side so it belongs inside #4 and never in the money path. |
+| 2026-08-01 | **Bill-service tests closed** — 7 green (`8d1616b`); #6 and #8 deliberately skipped (manually-verified behaviour, nil marginal learning). Test #7 found three real defects and drove fixes: no re-entry guard in `resolve`, 409 mistreated as failure, no batch isolation in the sweep. NEXT ACTION moved to the decision session. |
+| 2026-07-30 | Cross-cutting decisions recorded (Bucket D): **auth deferred** (additive, low learning value, adds friction to every test) but **traceability/correlation-ids moved ahead of the sabotage pass** (pervasive, expensive to retrofit, and Phase 7 is unreadable without it). Added the wallet baseline note — money model settled, service still reopened by notifications, load test, sabotage and auth. |
 | 2026-07-30 | `feat/biller-simulator` merged to `main` via PR #3 — bill-service, wallet V7–V10 and both simulators are now on `main`. NEXT ACTION moved to bill-service automated tests (six tests, one at a time). |
+| 2026-07-30 | **rev 2 — senior plan review absorbed.** Tests extended 6→8 (#6 UNKNOWN reaction, #7 double-resolve guard + V9 rider; sweep moved last; prediction placeholder added). **Decision session** created in Bucket A (RabbitMQ divergence + service budget) and gated ahead of notifications. **DEFINITION OF DONE** added (draft, pending learner's wording). `/bill/reserve` rename promoted to Immediate. Phase 8 now requires a written breaking-TPS + bottleneck prediction before k6 runs. |

@@ -102,6 +102,9 @@ public class BillService {
     }
 
     public Bill resolve(Bill bill, BillerResult result){
+        if(bill.getStatus() != BillStatus.Reserved){
+            return bill;
+        }
         switch (result.status()){
             case PAID: {
                 walletClient.capture(bill.getAmount(),"c" + bill.getPaymentId().replace("-",""));
