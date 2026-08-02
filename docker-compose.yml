@@ -1,6 +1,6 @@
-# Local Postgres for the QuickPay wallet service.
+# Local infrastructure for QuickPay: one Postgres per service, plus RabbitMQ.
 # Start it with:  docker compose up -d
-# Stop it with:   docker compose down   (add -v to also wipe the data volume)
+# Stop it with:   docker compose down   (add -v to also wipe the data volumes)
 services:
   postgres:
     image: postgres:16
@@ -37,6 +37,30 @@ services:
       timeout: 3s
       retries: 5
 
+  # Message broker for domain-event fan-out (ADR-0005): the wallet and bill service
+  # publish; notifications and history consume.
+  #   AMQP (apps connect here) : localhost:5672
+  #   Management UI (browser)  : http://localhost:15672   — login quickpay / quickpay
+  # The UI is the point of this during development: you can watch messages arrive,
+  # inspect queues, and see whether a consumer is actually draining them.
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: quickpay-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: quickpay
+      RABBITMQ_DEFAULT_PASS: quickpay
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # management UI
+    volumes:
+      - rabbit_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   wallet_pgdata:
   bill_pgdata:
+  rabbit_data:

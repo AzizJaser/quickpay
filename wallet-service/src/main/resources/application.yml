@@ -22,6 +22,14 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  # Broker connection only. The exchange/queue topology and the publishing code are
+  # yours to write — this just tells Spring where RabbitMQ is (docker-compose).
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:quickpay}
+    password: ${RABBITMQ_PASS:quickpay}
+
 server:
   port: 8080
 
