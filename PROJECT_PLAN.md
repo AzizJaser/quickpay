@@ -5,25 +5,51 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-01 (rev 5 — RabbitMQ decision made; ADR-0005; sponsor log opened)**
+> Last updated: **2026-08-03 (rev 6 — outbox write done; relay job is next)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Build notifications (service #3, req 5)** — the first RabbitMQ work.
+**Build notifications (service #3, req 5) — continue. The wallet's outbox WRITE is
+done; next is the RELAY that publishes those rows.**
 
-**Step 0, before any publishing code: decide reliable publishing.** Adopting a broker
-does not solve this by itself. If a service commits a money movement and *then* publishes,
-a failed publish means money moved with **no event** — history is silently wrong forever
-and no notification is ever sent. The expected answer is the **transactional outbox**
-(write the event to an `outbox` table in the *same transaction* as the money move; a
-poller ships it to the broker and marks it sent) — the same write-ahead shape already
-used for the bill record. Decide it, and log it as ADR-0006. See ADR-0005's open
-follow-up.
+✅ **Done so far** (branch `feat/notifications`, pushed):
+- RabbitMQ in docker-compose — AMQP 5672, management UI http://localhost:15672
+  (quickpay/quickpay). `spring-boot-starter-amqp` + `spring.rabbitmq.*` in the wallet.
+- **Reliable publishing decided: transactional outbox** (was Step 0). Rejected
+  "write the row only when publishing fails" — a crash between commit and publish
+  skips the failure handler entirely, so the event is lost with no trace. The row
+  must be written *in the same transaction as the money move*: if the money is
+  committed, the obligation is committed.
+- **V11 `outbox_notification`** + `NotificationEvent` entity + repository +
+  `MoneyMovedPayload` record. Write lives inside `transfer`'s `@Transactional`.
+  One event per **customer leg** (`!wallet.isInternal()`): top-up → 1, P2P → 2,
+  suspense/biller legs → 0. Event types `money-sent` / `money-received`.
+  Serialisation failure → unchecked `ParsingNotificationEventException` → rollback
+  (fail closed: never move money you cannot account for).
+- Partial index `(created_at) WHERE sent_at IS NULL` — holds only the unsent
+  backlog, ~8 kB regardless of table size, and eliminates the sort.
+- Verified: top-up → 1 row, P2P → 2 rows, both `sent_at` null; a transfer failing on
+  insufficient balance writes **neither** a ledger row nor an outbox row (atomicity).
 
-Then: RabbitMQ in docker-compose, the event contract (who publishes what), the
-notifications module, and consumers. **One increment per session.**
+◀ **NEXT — the relay job:**
+1. Repository query for unsent rows (`sent_at IS NULL`, ordered by `created_at`,
+   with a LIMIT) — the query the partial index was built to serve.
+2. `@Scheduled` publisher: send to RabbitMQ, then set `sent_at`. Poll ~1-2s.
+   Optional refinement later: publish on `@TransactionalEventListener(AFTER_COMMIT)`
+   as a fast path, with the poller as the safety net — never publish *before* commit.
+3. Exchange + routing so `money-sent` / `money-received` can be bound separately.
+4. Then: notifications module (service #3) + its DB + consumer.
+   ⚠️ **Consumers must be idempotent** — the outbox is at-least-once, never
+   exactly-once (publish can succeed and the `sent_at` update fail). Dedup on
+   `event_id`. Third time this pattern appears: gateway webhook, biller, now events.
+   ⚠️ Notifications **owns customer contact details**, keyed by `cif` — narrow scope
+   (channels + preferences), NOT a customer master. The wallet returns the `cif` so
+   nobody asserts a fact another service owns.
+   ⚠️ Bill reserves emit a wallet event too, so a bill payment produces a wallet
+   event *and* a bill event. Suppression is a **notifications** policy decision —
+   the wallet publishes facts, and history needs all of them.
 
 *(Open decisions #1 and #2 were both resolved 2026-08-01 — see §5 and ADR-0005.)*
 
@@ -510,6 +536,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-03 | **Outbox write done** (`5ffe478`, branch `feat/notifications`): RabbitMQ scaffolded, transactional outbox decided and built (V11 + entity + write inside `transfer`'s transaction), partial index chosen from measurements. Atomicity verified. Relay job next. |
 | 2026-08-01 | `test/bill-service` merged to `main` via PR #4; full suite green on main (wallet 8/8, bill 7/7). |
 | 2026-08-01 | **RabbitMQ decision RESOLVED** (ADR-0005, docs branch): broker for event fan-out; bill's `@Async` biller trigger stays (point-to-point to an external system ≠ fan-out). Sponsor decisions log opened with its first three entries. ⚠️ ADR-0005 leaves **reliable publishing** open — outbox pattern, now Step 0 of the notifications build. NEXT ACTION → notifications (#3). |
 | 2026-08-01 | **Service decomposition DECIDED** (§5 #2): notifications = #3 (req 5 is itself a decomposition instruction), history = #4 as a read model (a statement needs bill context, so it is a join across two owners; also keeps heavy reads off the money core). **Budget now full.** **AI feature raised and DEFERRED** as a candidate (§5 #5) — not in the brief, blocked behind history existing, read-side so it belongs inside #4 and never in the money path. |
