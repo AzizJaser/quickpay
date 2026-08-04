@@ -37,6 +37,25 @@ services:
       timeout: 3s
       retries: 5
 
+  # Separate Postgres for the notification service (its own data, on host port 5434).
+  # It owns customer contact details and the processed-event log used for dedup.
+  notification-db:
+    image: postgres:16
+    container_name: quickpay-notification-db
+    environment:
+      POSTGRES_DB: notification
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: notification
+    ports:
+      - "5434:5432"
+    volumes:
+      - notification_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification -d notification"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Message broker for domain-event fan-out (ADR-0005): the wallet and bill service
   # publish; notifications and history consume.
   #   AMQP (apps connect here) : localhost:5672
@@ -64,3 +83,4 @@ volumes:
   wallet_pgdata:
   bill_pgdata:
   rabbit_data:
+  notification_pgdata:

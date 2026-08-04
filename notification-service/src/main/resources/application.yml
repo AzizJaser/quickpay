@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: notification-service
+
+  datasource:
+    # This service owns its OWN database (one DB per service).
+    # It stores customer contact details and the processed-event log used for dedup.
+    url: jdbc:postgresql://localhost:5434/notification
+    username: notification
+    password: notification
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema; Hibernate only validates. Never 'update' here either.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration   # your V1__... migrations go here
+
+  # Same broker the wallet publishes to. This service CONSUMES.
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:quickpay}
+    password: ${RABBITMQ_PASS:quickpay}
+
+server:
+  port: 8082   # wallet=8080, bill=8081, notification=8082, gateway-sim=9090, biller-sim=9091
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+
+notification:
+  # The exchange the wallet (and later the bill service) publishes to. This service
+  # declares its OWN queue and binds it here — publishers never name a queue.
+  events-exchange: ${NOTIFICATION_EVENTS_EXCHANGE:quickpay.events}
+  # Queue + binding pattern are yours to declare in a @Configuration class.
+  # Suggested: a durable queue bound with routing key "wallet.money.*"
+  queue-name: ${NOTIFICATION_QUEUE_NAME:notification.money-events}
+  routing-key: ${NOTIFICATION_ROUTING_KEY:wallet.money.*}
