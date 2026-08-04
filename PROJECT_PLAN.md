@@ -5,7 +5,7 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-03 (rev 6 — outbox write done; relay job is next)**
+> Last updated: **2026-08-04 (rev 7 — relay job done; notifications service is next)**
 
 ---
 
@@ -33,23 +33,36 @@ done; next is the RELAY that publishes those rows.**
 - Verified: top-up → 1 row, P2P → 2 rows, both `sent_at` null; a transfer failing on
   insufficient balance writes **neither** a ledger row nor an outbox row (atomicity).
 
-◀ **NEXT — the relay job:**
-1. Repository query for unsent rows (`sent_at IS NULL`, ordered by `created_at`,
-   with a LIMIT) — the query the partial index was built to serve.
-2. `@Scheduled` publisher: send to RabbitMQ, then set `sent_at`. Poll ~1-2s.
-   Optional refinement later: publish on `@TransactionalEventListener(AFTER_COMMIT)`
-   as a fast path, with the poller as the safety net — never publish *before* commit.
-3. Exchange + routing so `money-sent` / `money-received` can be bound separately.
-4. Then: notifications module (service #3) + its DB + consumer.
-   ⚠️ **Consumers must be idempotent** — the outbox is at-least-once, never
-   exactly-once (publish can succeed and the `sent_at` update fail). Dedup on
-   `event_id`. Third time this pattern appears: gateway webhook, biller, now events.
-   ⚠️ Notifications **owns customer contact details**, keyed by `cif` — narrow scope
-   (channels + preferences), NOT a customer master. The wallet returns the `cif` so
-   nobody asserts a fact another service owns.
-   ⚠️ Bill reserves emit a wallet event too, so a bill payment produces a wallet
-   event *and* a bill event. Suppression is a **notifications** policy decision —
-   the wallet publishes facts, and history needs all of them.
+✅ **Relay job DONE** (`c6c8af6`): `NotificationPublisherJob` polls
+`findTop100BySentAtIsNullOrderByCreatedAtAsc()` (matches the V11 partial index
+exactly), publishes each to the **`quickpay.events`** topic exchange, then marks
+`sent_at`. **Publish first, mark second** — marking first would lose the event on a
+failed publish; this way it just retries. At-least-once by design. Each message
+carries the outbox id as the AMQP **`message_id`** (the consumer's dedup key) plus
+`contentType: application/json`. Per-event try/catch so one bad event can't abort the
+batch. Routing keys are dotted — `wallet.money.sent` / `wallet.money.received` — so
+consumers bind selectively (`wallet.money.*`, `wallet.#`) without the publisher
+knowing they exist. Verified on the broker: right keys, right message_id, right
+content type; outbox rows flip to sent.
+
+**Broker gotcha learned:** Spring declares exchanges **lazily, on first connection**,
+not at app startup. The exchange won't exist until the first message is published —
+don't assume topology exists just because the service is up.
+
+◀ **NEXT — the notifications service (#3) itself:**
+1. Module scaffold (AI): `notifications-service` pom, its own Postgres in
+   docker-compose, `application.yml` (port 8082?), AMQP wiring.
+2. Its schema: `customer_contact` (keyed by **`cif`** — channels + preferences only,
+   NOT a customer master) and a **processed-events** table for dedup.
+3. Queue + binding declared **by the consumer** (`wallet.money.*`), never by the wallet.
+4. `@RabbitListener` consumer: read the payload and
+   `@Header(AmqpHeaders.MESSAGE_ID)`, **skip if already processed**, else "send" the
+   notification (simulated) and record the event id.
+   ⚠️ **Idempotency is mandatory** — the outbox is at-least-once. Third time this
+   pattern appears: gateway webhook, biller, now events.
+   ⚠️ Bill reserves also emit wallet events, so a bill payment yields a wallet event
+   *and* a bill event. Suppression is a **notifications policy** decision — the wallet
+   publishes facts and history needs all of them.
 
 *(Open decisions #1 and #2 were both resolved 2026-08-01 — see §5 and ADR-0005.)*
 
@@ -536,6 +549,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-04 | **Relay job done** (`c6c8af6`): publishes outbox rows to the `quickpay.events` topic exchange with dotted routing keys and the outbox id as AMQP `message_id`; marks `sent_at` after a successful publish. Exchange renamed from the misleading `notification-queue`. Verified on the broker. |
 | 2026-08-03 | **Outbox write done** (`5ffe478`, branch `feat/notifications`): RabbitMQ scaffolded, transactional outbox decided and built (V11 + entity + write inside `transfer`'s transaction), partial index chosen from measurements. Atomicity verified. Relay job next. |
 | 2026-08-01 | `test/bill-service` merged to `main` via PR #4; full suite green on main (wallet 8/8, bill 7/7). |
 | 2026-08-01 | **RabbitMQ decision RESOLVED** (ADR-0005, docs branch): broker for event fan-out; bill's `@Async` biller trigger stays (point-to-point to an external system ≠ fan-out). Sponsor decisions log opened with its first three entries. ⚠️ ADR-0005 leaves **reliable publishing** open — outbox pattern, now Step 0 of the notifications build. NEXT ACTION → notifications (#3). |
