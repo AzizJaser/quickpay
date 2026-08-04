@@ -42,3 +42,5 @@ wallet:
   create-max-retries: ${WALLET_CREATE_MAX_RETRIES:5}
   reconciliation-interval-ms: ${WALLET_RECONCILIATION_INTERVAL_MS:60000}
   gateway.webhook-secret: ${WALLET_WEBHOOK_SECRET:"super-secret-key"}
+  notification-interval-ms: ${WALLET_NOTIFICATION_INTERVAL_MS:2000}
+  events-exchange: ${WALLET_EVENTS_EXCHANGE:quickpay.events}

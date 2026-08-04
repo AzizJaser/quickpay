@@ -87,10 +87,10 @@ public class WalletService {
         ledgerEntryRepository.save(entry);
 
         if(!debitedWallet.isInternal()){
-            notificationEventRepository.save(notificationEventHelper("money-sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+            notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
         }
         if (!creditedWallet.isInternal()){
-            notificationEventRepository.save(notificationEventHelper("money-received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+            notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
         }
         return entry;
     }
