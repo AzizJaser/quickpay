@@ -33,7 +33,7 @@ public class NotificationPublisherJob {
         TopicExchange topic = notificationQueueConfig.getTopic();
         for(NotificationEvent event : events){
             try {
-                // sending message , how?
+                // sending message
                 rabbitTemplate.convertAndSend(topic.getName(),event.getEventType(),event.getPayload(),
                         message -> {
                                         message.getMessageProperties().setMessageId(event.getEventId().toString());

@@ -1,4 +1,4 @@
-package com.quickpay.notification.service.listener;
+package com.quickpay.notification.service;
 
 public class NotificationService {
 }

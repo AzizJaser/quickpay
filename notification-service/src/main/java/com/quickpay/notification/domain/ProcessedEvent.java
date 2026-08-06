@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
 @AllArgsConstructor @NoArgsConstructor
 @Entity
 @Table(name = "processed_events")
-public class NotificationEvent {
+public class ProcessedEvent {
 
     @Id
     private String messageId;
@@ -38,5 +38,6 @@ public class NotificationEvent {
 
     private int attempts;
 
+    @Column(nullable = false)
     private LocalDateTime lastAttemptAt;
 }

@@ -7,6 +7,6 @@ import org.springframework.stereotype.Repository;
 import java.util.Optional;
 
 @Repository
-public interface ProcessesEventRepository extends JpaRepository<ProcessesEventRepository,String> {
+public interface ProcessedEventRepository extends JpaRepository<ProcessedEvent,String> {
     Optional<ProcessedEvent> findByMessageId(String messageId);
 }
