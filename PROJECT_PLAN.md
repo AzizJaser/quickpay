@@ -5,7 +5,7 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-04 (rev 7 — relay job done; notifications service is next)**
+> Last updated: **2026-08-06 (rev 8 — notification consumer built; end-to-end run is next)**
 
 ---
 
@@ -49,20 +49,48 @@ content type; outbox rows flip to sent.
 not at app startup. The exchange won't exist until the first message is published —
 don't assume topology exists just because the service is up.
 
-◀ **NEXT — the notifications service (#3) itself:**
-1. Module scaffold (AI): `notifications-service` pom, its own Postgres in
-   docker-compose, `application.yml` (port 8082?), AMQP wiring.
-2. Its schema: `customer_contact` (keyed by **`cif`** — channels + preferences only,
-   NOT a customer master) and a **processed-events** table for dedup.
-3. Queue + binding declared **by the consumer** (`wallet.money.*`), never by the wallet.
-4. `@RabbitListener` consumer: read the payload and
-   `@Header(AmqpHeaders.MESSAGE_ID)`, **skip if already processed**, else "send" the
-   notification (simulated) and record the event id.
-   ⚠️ **Idempotency is mandatory** — the outbox is at-least-once. Third time this
-   pattern appears: gateway webhook, biller, now events.
-   ⚠️ Bill reserves also emit wallet events, so a bill payment yields a wallet event
-   *and* a bill event. Suppression is a **notifications policy** decision — the wallet
-   publishes facts and history needs all of them.
+✅ **Notification service (#3) BUILT** — module, own DB on 5434, port 8082, V1 schema
+(`customers` + `processed_events` with two partial indexes), entities, repositories,
+queue+binding topology, provider client, and the consumer. Committed on `feat/notifications`.
+
+✅ **Provider simulator** (`scaffolding/provider-simulator`, port 9092) — mock SMS/email
+with `/simulate/mode` forcing SENT / FAILED / SERVER_ERROR / TIMEOUT and a **0.3 default
+failure rate**, because requirement 5 says the channel "fails regularly" and a log-only
+sender would have left the whole retry design as unreachable code. Sends are idempotent
+per (channel, reference).
+
+**Design decisions made:**
+- Customers are **seeded**, so an unknown `cif` means "never notify" → log and drop,
+  write no row (a row would be permanent retry fodder — there is no "undeliverable" state).
+- **Contact details are looked up fresh at delivery time**, never snapshotted into the
+  event — so a changed phone number applies to retries too. This is why events carry
+  `cif` and not contact details.
+- The listener **never throws**: an escape means requeue, and a malformed payload or
+  unknown customer fails identically forever — a hot loop. Log and return instead.
+- `deliver(event, customer, routingKey)` is shared by the new-event and retry paths;
+  the retry job will be its third caller. Message text resolved **once** from the routing
+  key (the payload carries no direction).
+
+◀ **NEXT — run the whole chain end to end. Two things first:**
+1. **Seed a customer** in the notification DB whose `cif` matches a wallet you transact
+   with (wallet numbers are `%02d` + cif, so `007700000001` → cif `7700000001`). Until
+   then every event logs "no customer — dropping".
+2. Boot: wallet 8080, notification 8082, provider-sim 9092, rabbit, all three DBs.
+
+Then: transfer → outbox → relay → `quickpay.events` → queue → listener → provider.
+**Predict first:** with the simulator at 0.3 failure rate, what is in `processed_events`
+after one P2P transfer between two seeded customers?
+
+⚠️ **The uncomfortable answer waiting there:** when a send fails, the row sits with
+`sms_status = false` and *nothing picks it up* — the retry job does not exist yet. The
+partial indexes and `attempts`/`maximum-retries` are built for it, but until it is
+written a failed notification is simply never retried. That is the next increment after
+the end-to-end run.
+
+**Also still open:** the bill service does not publish `BillPaid`/`BillRejected` yet, so
+notifications only sees wallet events. And a bill reserve emits a wallet event too, so a
+bill payment will produce a wallet notification *and* (later) a bill one — suppression is
+a notifications-side policy call.
 
 *(Open decisions #1 and #2 were both resolved 2026-08-01 — see §5 and ADR-0005.)*
 
@@ -549,6 +577,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 | Date | Change |
 |---|---|
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-06 | **Notification service #3 built** (`b4a0c4c`): schema, entities, queue+binding, provider client and the consumer — dedup on AMQP message_id, status read from the provider's answer, never throws. Plus a **provider simulator** on 9092 with a 0.3 failure rate so the retry design has something real to react to. Not yet run end to end; **no retry job yet**, so failed sends currently sit unretried. |
 | 2026-08-04 | **Relay job done** (`c6c8af6`): publishes outbox rows to the `quickpay.events` topic exchange with dotted routing keys and the outbox id as AMQP `message_id`; marks `sent_at` after a successful publish. Exchange renamed from the misleading `notification-queue`. Verified on the broker. |
 | 2026-08-03 | **Outbox write done** (`5ffe478`, branch `feat/notifications`): RabbitMQ scaffolded, transactional outbox decided and built (V11 + entity + write inside `transfer`'s transaction), partial index chosen from measurements. Atomicity verified. Relay job next. |
 | 2026-08-01 | `test/bill-service` merged to `main` via PR #4; full suite green on main (wallet 8/8, bill 7/7). |
