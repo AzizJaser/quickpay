@@ -40,4 +40,6 @@ public class ProcessedEvent {
 
     @Column(nullable = false)
     private LocalDateTime lastAttemptAt;
+
+    private String routingKey;
 }

@@ -11,8 +11,8 @@
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Build notifications (service #3, req 5) — continue. The wallet's outbox WRITE is
-done; next is the RELAY that publishes those rows.**
+**Build notifications (service #3, req 5) — continue. Outbox → relay → consumer is
+verified end to end; next is the RETRY JOB that picks up failed sends.**
 
 ✅ **Done so far** (branch `feat/notifications`, pushed):
 - RabbitMQ in docker-compose — AMQP 5672, management UI http://localhost:15672
@@ -71,21 +71,52 @@ per (channel, reference).
   the retry job will be its third caller. Message text resolved **once** from the routing
   key (the payload carries no direction).
 
-◀ **NEXT — run the whole chain end to end. Two things first:**
-1. **Seed a customer** in the notification DB whose `cif` matches a wallet you transact
-   with (wallet numbers are `%02d` + cif, so `007700000001` → cif `7700000001`). Until
-   then every event logs "no customer — dropping".
-2. Boot: wallet 8080, notification 8082, provider-sim 9092, rabbit, all three DBs.
+✅ **END-TO-END VERIFIED** — customers seeded, full chain exercised: transfer → outbox →
+relay → `quickpay.events` → queue → listener → provider. Outbox rows flip to `sent_at`,
+`processed_events` rows appear with per-channel status. Both failure and success paths
+driven via `/simulate/mode`.
 
-Then: transfer → outbox → relay → `quickpay.events` → queue → listener → provider.
-**Predict first:** with the simulator at 0.3 failure rate, what is in `processed_events`
-after one P2P transfer between two seeded customers?
+**Bug found by reading the data (not the code):** `sms_status = true` but `sms_sent_at`
+null. First fix set the timestamp unconditionally, which produced the *contradictory*
+state `status = false, sent_at = <time>`. Correct rule: **the timestamp is set only on
+success and nulled on failure** — status and timestamp must never disagree.
 
-⚠️ **The uncomfortable answer waiting there:** when a send fails, the row sits with
-`sms_status = false` and *nothing picks it up* — the retry job does not exist yet. The
-partial indexes and `attempts`/`maximum-retries` are built for it, but until it is
-written a failed notification is simply never retried. That is the next increment after
-the end-to-end run.
+✅ **`routing_key` added via the full expand-contract dance** (V2–V6). Needed because the
+retry job must know the direction (`wallet.money.sent` vs `...received`) to render a
+message, and the direction lives *only* in the AMQP routing key — the stored payload
+does not carry it.
+
+| step | migration | what it bought |
+|---|---|---|
+| 1. Expand | V2 — **nullable** column | old rows and new code coexist; no downtime |
+| 2. Populate | entity + listener | proven live: 3 new rows carried real keys while 12 old stayed null |
+| 3. Backfill | V3 — `UPDATE … WHERE routing_key IS NULL` → `'unknown'` | idempotent; every row satisfies the constraint *before* it exists |
+| 4. Contract | V4 `NOT VALID` → V5 `VALIDATE` → V6 `SET NOT NULL` | the blocking full-table scan is decomposed away |
+
+Sentinel is `'unknown'`, not a guessed direction — the true value is underivable from the
+stored payload, and an honest sentinel prompts the right question later where a plausible
+guess would be quietly believed. Verified after apply: `attnotnull = t` **and**
+`convalidated = t`; a null insert is rejected by the column-level NOT NULL (which Postgres
+checks *before* table constraints), leaving the CHECK as droppable scaffolding.
+
+◀ **NEXT — the retry job.** When a send fails the row sits with `sms_status = false` and
+*nothing picks it up*. The partial indexes and `attempts` / `maximum-retries` were built
+for this job; until it exists a failed notification is never retried.
+
+Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
+indexes — merged by `message_id` so a row needing both channels is not processed twice and
+`attempts` is not double-incremented. Calls `NotificationService.deliver(...)` as its
+**third caller** (new-event path and this job share it).
+
+**Predict first:** with `maximum-retries = 5` and the simulator at a 0.3 failure rate,
+how many rows still have `sms_status = false` after the job has run enough times to
+exhaust retries — and what should happen to a row that hits the cap?
+
+⚠️ **Cleanups riding along** (do not let these rot): `ProcessedEvent`'s 10-arg positional
+constructor is a hazard — adjacent `boolean` / `LocalDateTime` params are silently
+interchangeable. The listener's else-branch duplicates the customer lookup instead of
+calling `extractCustomerFromMessage`, and carries dead fields (`notificationProviderClient`,
+`MAXIMUM_RETRIES`) plus unused locals.
 
 **Also still open:** the bill service does not publish `BillPaid`/`BillRejected` yet, so
 notifications only sees wallet events. And a bill reserve emits a wallet event too, so a
@@ -569,6 +600,11 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 - Two beans of the same type (two `RestClient`s) need name-matched injection or `@Qualifier`.
 - A read timeout must be configured, or a hung HTTP call blocks forever and the timeout exception never fires.
 - Shared Testcontainers DB + no rollback ⇒ every test needs unique idempotency keys and CIFs.
+- **Flyway runs each migration file in ONE transaction** (Postgres has transactional DDL). Locks release only at commit — so bundling `ADD CONSTRAINT … NOT VALID` + `VALIDATE` in one file holds `ACCESS EXCLUSIVE` across the whole scan and destroys the lock-avoidance the split was for. **One statement per file**, at the cost of atomicity (a crash mid-sequence leaves a safe-but-incomplete state).
+- `NOT VALID` means "existing rows unchecked", **not** "not enforced" — new rows are rejected immediately. That asymmetry is what makes the gap between the two migrations safe.
+- `SET NOT NULL` skips its verification scan iff a **validated** `CHECK (col IS NOT NULL)` already proves the property (PG 12+). Alone, it full-scans under `ACCESS EXCLUSIVE`.
+- DDL waits for its lock **at the head of the queue** — every query arriving behind it also waits. One idle-in-transaction session + a migration = a fully stalled table. Set `lock_timeout` before DDL in production.
+- A status flag and its timestamp must be written **together or not at all** — setting the timestamp unconditionally produces states that contradict themselves and cannot be reasoned about later.
 
 ---
 
@@ -576,6 +612,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-08-09 | **Notification chain verified end to end**, and `routing_key` added to `processed_events` via the full **expand-contract** dance (V2 nullable → code populates → V3 idempotent backfill to `'unknown'` → V4 `NOT VALID` / V5 `VALIDATE` / V6 `SET NOT NULL`, one statement per file so Flyway's per-file transaction cannot hold `ACCESS EXCLUSIVE` across the scan). Two bugs found by reading data rather than code: `sms_sent_at` left null on success, then set unconditionally producing contradictory rows. NEXT ACTION → the **retry job**. |
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
 | 2026-08-06 | **Notification service #3 built** (`b4a0c4c`): schema, entities, queue+binding, provider client and the consumer — dedup on AMQP message_id, status read from the provider's answer, never throws. Plus a **provider simulator** on 9092 with a 0.3 failure rate so the retry design has something real to react to. Not yet run end to end; **no retry job yet**, so failed sends currently sit unretried. |
 | 2026-08-04 | **Relay job done** (`c6c8af6`): publishes outbox rows to the `quickpay.events` topic exchange with dotted routing keys and the outbox id as AMQP `message_id`; marks `sent_at` after a successful publish. Exchange renamed from the misleading `notification-queue`. Verified on the broker. |

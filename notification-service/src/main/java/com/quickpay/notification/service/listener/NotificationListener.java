@@ -11,6 +11,7 @@ import com.quickpay.notification.enums.NotificationStatus;
 import com.quickpay.notification.exception.CustomerNotFoundException;
 import com.quickpay.notification.repository.CustomerRepository;
 import com.quickpay.notification.repository.ProcessedEventRepository;
+import com.quickpay.notification.service.NotificationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
@@ -33,17 +34,17 @@ public class NotificationListener {
 
     private final NotificationProviderClient notificationProviderClient;
 
-    @Value("${notification.maximum-retries}")
-    private int MAXIMUM_RETRIES;
+    private final NotificationService notificationService;
 
     private static final Logger logger = LoggerFactory.getLogger(NotificationListener.class);
 
 
-    public NotificationListener(ProcessedEventRepository processedEventRepository, CustomerRepository customerRepository, ObjectMapper objectMapper,NotificationProviderClient notificationProviderClient){
+    public NotificationListener(ProcessedEventRepository processedEventRepository, CustomerRepository customerRepository, ObjectMapper objectMapper, NotificationProviderClient notificationProviderClient, NotificationService notificationService){
         this.processedEventRepository = processedEventRepository;
         this.customerRepository = customerRepository;
         this.objectMapper = objectMapper;
         this.notificationProviderClient = notificationProviderClient;
+        this.notificationService = notificationService;
     }
 
 
@@ -54,21 +55,21 @@ public class NotificationListener {
             Optional<ProcessedEvent> event_present = processedEventRepository.findByMessageId(messageId);
             if(event_present.isPresent()){ // event found
                 ProcessedEvent event = event_present.get();
-                Customer customer = extractCustomerFromMessage(payload);
+                Customer customer = notificationService.extractCustomerFromMessage(payload);
                 ProviderResponse smsResponse;
                 ProviderResponse emailResponse;
                 if(event.isEmailStatus() && event.isSmsStatus()){ // in case both notification is done
                     return;
                 }else{ // in case one of the notification or both is not sent yet
-                    deliver(event,customer,routingKey);
+                    notificationService.deliver(event,customer,routingKey);
                 }
             }else { // event wasn't found
                 NotificationEvent receivedEvent = objectMapper.readValue(payload, NotificationEvent.class);
                 String cif = receivedEvent.cif();
                 Customer customer = customerRepository.findCustomerByCif(cif).orElseThrow(() -> new CustomerNotFoundException(cif));
-                ProcessedEvent event = new ProcessedEvent(messageId, false, null,false,null,LocalDateTime.now(),payload,0,LocalDateTime.now());
+                ProcessedEvent event = new ProcessedEvent(messageId, false, null,false,null,LocalDateTime.now(),payload,0,LocalDateTime.now(),routingKey);
                 processedEventRepository.save(event);
-                deliver(event,customer,routingKey);
+                notificationService.deliver(event,customer,routingKey);
             }
         } catch (JsonProcessingException e) {
             logger.error("malformed payload for message {} — dropping", messageId, e);
@@ -79,46 +80,9 @@ public class NotificationListener {
         }
     }
 
-    public Customer extractCustomerFromMessage(String payload) throws JsonProcessingException {
-        NotificationEvent receivedEvent = objectMapper.readValue(payload, NotificationEvent.class);
-        return customerRepository.findCustomerByCif(receivedEvent.cif())
-                    .orElseThrow(()-> new CustomerNotFoundException(receivedEvent.cif()));
-    }
     public NotificationEvent parsingNotificationMessage(String payload) throws JsonProcessingException {
         return  objectMapper.readValue(payload, NotificationEvent.class);
     }
 
-    private void deliver(ProcessedEvent event, Customer customer, String routingKey) {
-
-        String message = routingKey.equals("wallet.money.sent")
-                ? "your transaction has been sent!"
-                : "you received a transaction!";
-
-        if (!event.isSmsStatus() && event.getAttempts() < MAXIMUM_RETRIES) {
-            ProviderResponse response = notificationProviderClient
-                    .smsProvider(customer.getPhoneNumber(), message, event.getMessageId());
-            event.setSmsStatus(response.status() == NotificationStatus.SENT);
-            if (event.isSmsStatus()) {
-                event.setSmsSentAt(LocalDateTime.now());
-            } else {
-                event.setSmsSentAt(null);
-            }
-        }
-
-        if (!event.isEmailStatus() && event.getAttempts() < MAXIMUM_RETRIES) {
-            ProviderResponse response = notificationProviderClient
-                    .emailProvider(customer.getEmail(), message, event.getMessageId());
-            event.setEmailStatus(response.status() == NotificationStatus.SENT);
-            if (event.isEmailStatus()) {
-                event.setEmailSentAt(LocalDateTime.now());
-            } else {
-                event.setEmailSentAt(null);
-            }
-        }
-
-        event.setAttempts(event.getAttempts() + 1);
-        event.setLastAttemptAt(LocalDateTime.now());
-        processedEventRepository.save(event);
-    }
 
 }

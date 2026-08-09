@@ -1,0 +1,1 @@
+UPDATE processed_events SET routing_key = 'unknown' WHERE routing_key IS NULL;
