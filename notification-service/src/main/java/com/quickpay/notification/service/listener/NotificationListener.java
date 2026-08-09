@@ -98,12 +98,22 @@ public class NotificationListener {
             ProviderResponse response = notificationProviderClient
                     .smsProvider(customer.getPhoneNumber(), message, event.getMessageId());
             event.setSmsStatus(response.status() == NotificationStatus.SENT);
+            if (event.isSmsStatus()) {
+                event.setSmsSentAt(LocalDateTime.now());
+            } else {
+                event.setSmsSentAt(null);
+            }
         }
 
         if (!event.isEmailStatus() && event.getAttempts() < MAXIMUM_RETRIES) {
             ProviderResponse response = notificationProviderClient
                     .emailProvider(customer.getEmail(), message, event.getMessageId());
             event.setEmailStatus(response.status() == NotificationStatus.SENT);
+            if (event.isEmailStatus()) {
+                event.setEmailSentAt(LocalDateTime.now());
+            } else {
+                event.setEmailSentAt(null);
+            }
         }
 
         event.setAttempts(event.getAttempts() + 1);

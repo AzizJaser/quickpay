@@ -9,7 +9,7 @@ import org.springframework.web.client.RestClient;
 public class RestClientConfig {
 
     @Bean
-    RestClient NotificationProviderRestClient(@Value("${quickpay.provider-base-url}") String baseUrl){ // no based URL yet
+    RestClient NotificationProviderRestClient(@Value("${notification.provider-base-url}") String baseUrl){ // no based URL yet
         return RestClient.builder().baseUrl(baseUrl).build();
     }
 }
