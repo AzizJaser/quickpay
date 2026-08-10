@@ -7,6 +7,7 @@ import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
 import com.quickpay.notification.dto.response.ProviderResponse;
+import com.quickpay.notification.enums.NotificationState;
 import com.quickpay.notification.enums.NotificationStatus;
 import com.quickpay.notification.exception.CustomerNotFoundException;
 import com.quickpay.notification.repository.CustomerRepository;
@@ -40,14 +41,22 @@ public class NotificationService {
                 ? "your transaction has been sent!"
                 : "you received a transaction!";
 
+
+
         if (!event.isSmsStatus() && event.getAttempts() < MAXIMUM_RETRIES) {
             ProviderResponse response = notificationProviderClient
                     .smsProvider(customer.getPhoneNumber(), message, event.getMessageId());
             event.setSmsStatus(response.status() == NotificationStatus.SENT);
+            event.setSmsState(response.status() == NotificationStatus.SENT ? NotificationState.SENT : NotificationState.PENDING);
             if (event.isSmsStatus()) {
                 event.setSmsSentAt(LocalDateTime.now());
             } else {
                 event.setSmsSentAt(null);
+                if(event.getAttempts() + 1 >= MAXIMUM_RETRIES){
+                    event.setSmsState(NotificationState.FAILED);
+                }else {
+                    event.setSmsState(NotificationState.PENDING);
+                }
             }
         }
 
@@ -55,10 +64,16 @@ public class NotificationService {
             ProviderResponse response = notificationProviderClient
                     .emailProvider(customer.getEmail(), message, event.getMessageId());
             event.setEmailStatus(response.status() == NotificationStatus.SENT);
+            event.setEmailState(response.status() == NotificationStatus.SENT ? NotificationState.SENT : NotificationState.PENDING);
             if (event.isEmailStatus()) {
                 event.setEmailSentAt(LocalDateTime.now());
             } else {
                 event.setEmailSentAt(null);
+                if(event.getAttempts() + 1 >= MAXIMUM_RETRIES){
+                    event.setEmailState(NotificationState.FAILED);
+                }else {
+                    event.setEmailState(NotificationState.PENDING);
+                }
             }
         }
 

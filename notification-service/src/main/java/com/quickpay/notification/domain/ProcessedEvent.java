@@ -1,9 +1,7 @@
 package com.quickpay.notification.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import com.quickpay.notification.enums.NotificationState;
+import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -42,4 +40,11 @@ public class ProcessedEvent {
     private LocalDateTime lastAttemptAt;
 
     private String routingKey;
+
+    @Enumerated(EnumType.STRING)
+    private NotificationState smsState;
+
+    @Enumerated(EnumType.STRING)
+    private NotificationState emailState;
+
 }

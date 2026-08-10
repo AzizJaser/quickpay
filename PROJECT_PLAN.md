@@ -99,9 +99,43 @@ guess would be quietly believed. Verified after apply: `attnotnull = t` **and**
 `convalidated = t`; a null insert is rejected by the column-level NOT NULL (which Postgres
 checks *before* table constraints), leaving the CHECK as droppable scaffolding.
 
-◀ **NEXT — the retry job.** When a send fails the row sits with `sms_status = false` and
-*nothing picks it up*. The partial indexes and `attempts` / `maximum-retries` were built
-for this job; until it exists a failed notification is never retried.
+✅ **Terminal state added (V7/V8 + dual-write).** A `boolean` holds two values but the
+system has three situations: *pending*, *sent*, and *tried N times and gave up*. With a
+boolean, the last two are both `false`, so the partial index `WHERE sms_status = false`
+could never shed dead rows — it would grow forever — and the unconditional `attempts++`
+kept incrementing rows nobody would ever send. **Both bugs were one root cause: no way to
+say "done, but not successfully."**
+
+Fix: `sms_state` / `email_state` as `varchar(10)` + `CHECK` (**not** a native PG enum —
+§9; reproduced the exact `column is of type notification_state but expression is of type
+character varying` failure before backing it out). Per channel, because SMS and email
+succeed and fail independently — a single row-level "exhausted" flag overwrote a
+delivered channel's `SENT` with `FAILED`.
+
+Transitions live in `deliver()`, one place per state: success → `SENT`; failure with
+budget left → `PENDING`; failure with budget gone → `FAILED`. The budget test is
+`getAttempts() + 1 >= MAXIMUM_RETRIES` — **the `+1` is load-bearing**: `attempts` is
+incremented at the *bottom* of the method, so without it the inner test is the exact
+negation of the outer guard and the `FAILED` branch is unreachable dead code.
+
+This is a column **replacement**, not an addition, so it needs a step `routing_key` didn't:
+**dual-write**. `deliver()` writes boolean *and* enum on every change, so old and new code
+can coexist and a rollback still finds accurate booleans. Verified live on both paths
+(`SENT`→`SENT`+timestamp, `FAILED`→`PENDING`+null), **0 mismatches** across all rows.
+
+⏳ **Still owed on this thread:** V9/V10/V11 contract (`NOT VALID` → `VALIDATE` →
+`SET NOT NULL`, one statement per file); switch the partial indexes to
+`WHERE sms_state = 'PENDING'` and drop the boolean ones — needs
+`CREATE INDEX CONCURRENTLY`, which **cannot run in a transaction**, so it needs
+`executeInTransaction=false` (same Flyway lesson, new disguise); then a *separate later
+deploy* to stop dual-writing and drop the booleans (remove the entity field **before**
+dropping the column — `ddl-auto: validate` fails on a field with no column, but ignores a
+column with no field).
+
+◀ **NEXT — the retry job.** When a send fails the row sits `PENDING` and *nothing picks it
+up*. The partial indexes and `attempts` / `maximum-retries` were built for this job; until
+it exists a failed notification is never retried — and the `FAILED` transition, though now
+implemented, is **still unobservable** because nothing calls `deliver()` a second time.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and
@@ -604,6 +638,10 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 - `NOT VALID` means "existing rows unchecked", **not** "not enforced" — new rows are rejected immediately. That asymmetry is what makes the gap between the two migrations safe.
 - `SET NOT NULL` skips its verification scan iff a **validated** `CHECK (col IS NOT NULL)` already proves the property (PG 12+). Alone, it full-scans under `ACCESS EXCLUSIVE`.
 - DDL waits for its lock **at the head of the queue** — every query arriving behind it also waits. One idle-in-transaction session + a migration = a fully stalled table. Set `lock_timeout` before DDL in production.
+- A `boolean` cannot hold a **terminal-failure** state. "Pending" and "gave up" both read `false`, so a partial index on it can never shed dead rows. Queue-shaped tables need three states, not two.
+- Index predicates must be **immutable literals** — they cannot read config. Baking `attempts < 5` into an index couples schema to `application.yml`, and the failure is asymmetric: *lowering* the config keeps the index usable, *raising* it silently makes it unusable (the query no longer implies the predicate) and you drop to a seq scan with no error. **Index the row's state, not the policy.**
+- Replacing a column (vs adding one) needs a **dual-write** phase — both columns written on every change — so old and new code coexist and rollback stays safe. Flip *writes* first, *reads* a deploy later, drop the old column a deploy after that.
+- A dedup ledger row's lifetime is governed by **how long redelivery is possible**, not by whether the work finished. Deleting/archiving a *delivered* row re-opens duplicate sends (the relay's publish-then-mark gap will replay the same `message_id`). Retention must be age-based, never status-based.
 - A status flag and its timestamp must be written **together or not at all** — setting the timestamp unconditionally produces states that contradict themselves and cannot be reasoned about later.
 
 ---
@@ -612,6 +650,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-08-10 | **Terminal state added** (V7 `varchar`+`CHECK`, V8 three-branch `CASE` backfill, dual-write in `deliver()`). Root cause named: a boolean cannot distinguish *pending* from *gave up*, so the partial index could never shed dead rows and `attempts` incremented forever. Rejected along the way: a native PG enum (breaks Hibernate varchar binding — reproduced), `attempts` in the index predicate (couples schema to config, fails asymmetrically and silently), and archiving delivered rows (re-opens duplicate sends — the dedup ledger's lifetime is a *time* question, not a status one). Contract steps V9–V11 + index switch still owed. |
 | 2026-08-09 | **Notification chain verified end to end**, and `routing_key` added to `processed_events` via the full **expand-contract** dance (V2 nullable → code populates → V3 idempotent backfill to `'unknown'` → V4 `NOT VALID` / V5 `VALIDATE` / V6 `SET NOT NULL`, one statement per file so Flyway's per-file transaction cannot hold `ACCESS EXCLUSIVE` across the scan). Two bugs found by reading data rather than code: `sms_sent_at` left null on success, then set unconditionally producing contradictory rows. NEXT ACTION → the **retry job**. |
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
 | 2026-08-06 | **Notification service #3 built** (`b4a0c4c`): schema, entities, queue+binding, provider client and the consumer — dedup on AMQP message_id, status read from the provider's answer, never throws. Plus a **provider simulator** on 9092 with a 0.3 failure rate so the retry design has something real to react to. Not yet run end to end; **no retry job yet**, so failed sends currently sit unretried. |

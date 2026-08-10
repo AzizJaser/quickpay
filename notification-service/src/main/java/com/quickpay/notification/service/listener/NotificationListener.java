@@ -7,6 +7,7 @@ import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
 import com.quickpay.notification.dto.response.ProviderResponse;
+import com.quickpay.notification.enums.NotificationState;
 import com.quickpay.notification.enums.NotificationStatus;
 import com.quickpay.notification.exception.CustomerNotFoundException;
 import com.quickpay.notification.repository.CustomerRepository;
@@ -67,7 +68,7 @@ public class NotificationListener {
                 NotificationEvent receivedEvent = objectMapper.readValue(payload, NotificationEvent.class);
                 String cif = receivedEvent.cif();
                 Customer customer = customerRepository.findCustomerByCif(cif).orElseThrow(() -> new CustomerNotFoundException(cif));
-                ProcessedEvent event = new ProcessedEvent(messageId, false, null,false,null,LocalDateTime.now(),payload,0,LocalDateTime.now(),routingKey);
+                ProcessedEvent event = new ProcessedEvent(messageId, false, null,false,null,LocalDateTime.now(),payload,0,LocalDateTime.now(),routingKey, NotificationState.PENDING,NotificationState.PENDING);
                 processedEventRepository.save(event);
                 notificationService.deliver(event,customer,routingKey);
             }
@@ -83,6 +84,5 @@ public class NotificationListener {
     public NotificationEvent parsingNotificationMessage(String payload) throws JsonProcessingException {
         return  objectMapper.readValue(payload, NotificationEvent.class);
     }
-
 
 }
