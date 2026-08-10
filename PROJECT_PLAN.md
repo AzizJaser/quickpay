@@ -123,14 +123,32 @@ This is a column **replacement**, not an addition, so it needs a step `routing_k
 can coexist and a rollback still finds accurate booleans. Verified live on both paths
 (`SENT`→`SENT`+timestamp, `FAILED`→`PENDING`+null), **0 mismatches** across all rows.
 
-⏳ **Still owed on this thread:** V9/V10/V11 contract (`NOT VALID` → `VALIDATE` →
-`SET NOT NULL`, one statement per file); switch the partial indexes to
-`WHERE sms_state = 'PENDING'` and drop the boolean ones — needs
-`CREATE INDEX CONCURRENTLY`, which **cannot run in a transaction**, so it needs
-`executeInTransaction=false` (same Flyway lesson, new disguise); then a *separate later
-deploy* to stop dual-writing and drop the booleans (remove the entity field **before**
-dropping the column — `ddl-auto: validate` fails on a field with no column, but ignores a
-column with no field).
+✅ **Indexes switched to state (V9).** Two new partial indexes on `(created_at)
+WHERE <channel>_state = 'PENDING'`, old boolean-keyed ones dropped. Built with
+`CREATE INDEX CONCURRENTLY` (a plain `CREATE INDEX` takes `SHARE`, which blocks every
+INSERT/UPDATE for the build) — which cannot run inside a transaction, so the migration
+needs a sibling script-config file `V9__….sql.conf` containing `executeInTransaction=false`.
+Verified: index used, 9 pending rows, and a plain `Index Scan` returns them in
+`created_at` order with **no Sort node** (a Bitmap Index Scan loses ordering and still
+sorts — only a straight index scan gets the ordering free).
+
+⚠️ **This one bit hard — two failures worth remembering:**
+1. **Flyway deadlocked against itself.** `CREATE INDEX CONCURRENTLY` waits for all
+   in-flight transactions to finish; Flyway holds *its own* connection open in a
+   transaction to guard the history table. `pg_blocking_pids` showed the migration
+   connection blocked by Flyway's lock connection — it would have waited forever.
+   Fix: `spring.flyway.postgresql.transactional-lock: false` (session-level advisory
+   lock instead of a transactional one).
+2. **Half-applied with no record.** Statement 1 completed; statements 2–4 never ran; no
+   `v9` row was written. A transactional migration would have rolled the whole thing
+   back. Rule: **a migration that cannot roll back must be idempotent** — `IF NOT EXISTS`
+   on every create, `IF EXISTS` on every drop, so a re-run skips what already landed.
+
+⏳ **Still owed on this thread:** V10/V11/V12 contract for the state columns
+(`NOT VALID` → `VALIDATE` → `SET NOT NULL`, one statement per file — mechanical repeat of
+V4/V5/V6); then a *separate later deploy* to stop dual-writing and drop the booleans
+(remove the entity field **before** dropping the column — `ddl-auto: validate` fails on a
+field with no column, but ignores a column with no field).
 
 ◀ **NEXT — the retry job.** When a send fails the row sits `PENDING` and *nothing picks it
 up*. The partial indexes and `attempts` / `maximum-retries` were built for this job; until
@@ -638,6 +656,11 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 - `NOT VALID` means "existing rows unchecked", **not** "not enforced" — new rows are rejected immediately. That asymmetry is what makes the gap between the two migrations safe.
 - `SET NOT NULL` skips its verification scan iff a **validated** `CHECK (col IS NOT NULL)` already proves the property (PG 12+). Alone, it full-scans under `ACCESS EXCLUSIVE`.
 - DDL waits for its lock **at the head of the queue** — every query arriving behind it also waits. One idle-in-transaction session + a migration = a fully stalled table. Set `lock_timeout` before DDL in production.
+- `CREATE INDEX CONCURRENTLY` + Flyway **deadlocks by default**: the build waits for all open transactions, and Flyway holds one for its history lock. Needs `spring.flyway.postgresql.transactional-lock: false`. Diagnose with `pg_blocking_pids()` — a hang shows no error and no history row, so it looks like nothing happened.
+- **A migration that cannot roll back must be idempotent.** With `executeInTransaction=false` a mid-file failure leaves earlier statements permanently applied and unrecorded, so every statement needs `IF EXISTS` / `IF NOT EXISTS` to survive the retry.
+- Keyword order is `CREATE INDEX CONCURRENTLY IF NOT EXISTS` — `CONCURRENTLY` first.
+- The `.sql.conf` script-config file must reach `target/classes` too; without it Flyway silently wraps the file in a transaction again.
+- A **Bitmap** Index Scan does *not* preserve index order, so `ORDER BY` still costs a Sort. Only a plain `Index Scan` gets the ordering for free.
 - A `boolean` cannot hold a **terminal-failure** state. "Pending" and "gave up" both read `false`, so a partial index on it can never shed dead rows. Queue-shaped tables need three states, not two.
 - Index predicates must be **immutable literals** — they cannot read config. Baking `attempts < 5` into an index couples schema to `application.yml`, and the failure is asymmetric: *lowering* the config keeps the index usable, *raising* it silently makes it unusable (the query no longer implies the predicate) and you drop to a seq scan with no error. **Index the row's state, not the policy.**
 - Replacing a column (vs adding one) needs a **dual-write** phase — both columns written on every change — so old and new code coexist and rollback stays safe. Flip *writes* first, *reads* a deploy later, drop the old column a deploy after that.

@@ -21,6 +21,8 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration   # your V1__... migrations go here
+    postgresql:
+      transactional-lock: false
 
   # Same broker the wallet publishes to. This service CONSUMES.
   rabbitmq:
