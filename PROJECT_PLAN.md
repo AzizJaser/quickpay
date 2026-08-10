@@ -150,10 +150,35 @@ V4/V5/V6); then a *separate later deploy* to stop dual-writing and drop the bool
 (remove the entity field **before** dropping the column — `ddl-auto: validate` fails on a
 field with no column, but ignores a column with no field).
 
-◀ **NEXT — the retry job.** When a send fails the row sits `PENDING` and *nothing picks it
-up*. The partial indexes and `attempts` / `maximum-retries` were built for this job; until
-it exists a failed notification is never retried — and the `FAILED` transition, though now
-implemented, is **still unobservable** because nothing calls `deliver()` a second time.
+✅ **Retry job DONE** (`ResendingJob`). `@Scheduled`, **two** queries — one per channel,
+each matching one partial index (a single `OR` across both columns could use neither) —
+merged into a `LinkedHashMap` keyed on `message_id`. The merge is not cosmetic: every one
+of the 9 pending rows was pending on *both* channels, so without it `deliver()` would run
+twice per round, doubling provider calls and burning the 5-attempt budget in ~2 rounds
+instead of 5. `LinkedHashMap` (not `HashMap`) so the `OrderByCreatedAtAsc` fairness
+survives the merge.
+
+Per-row try/catch, never around the loop — one bad row must not abort the batch.
+`CustomerNotFoundException` and `JsonProcessingException` are **permanent** (a stored
+payload will never parse; a deleted customer will never return), so both mark the row
+terminal rather than leaving it to spin forever. Third catch on `Exception` so an
+unexpected provider/DB error costs one row, not the batch.
+
+**Verified end to end:** 9 rows went `attempts 1 → 5` over four rounds, flipped to
+`FAILED`, and the pending set emptied — the job now finds nothing. First time `FAILED`
+was ever written by live code rather than a migration, and `attempts` provably stops
+climbing because the row leaves the *query*, not merely changes state.
+
+⚠️ **The indexes were NOT used** — `idx_scan` did not move (the `2` on the SMS index is
+from two forced `EXPLAIN ANALYZE` runs). At 19 rows the planner correctly prefers a seq
+scan. So the index switch is **unproven under load**, and two causes are currently
+indistinguishable: the tiny table (certain) and the parameterised-enum/custom-plan concern
+(`sms_state = ?` needs a custom plan for the planner to prove it implies the partial
+index). Only a volume fixture separates them.
+
+◀ **NEXT — decide the volume test** (prove the index is actually used at scale, same shape
+as the 1M-row indexing experiment), then the V10/V11/V12 `NOT NULL` contract for the state
+columns.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and

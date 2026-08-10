@@ -50,3 +50,4 @@ notification:
   provider-base-url: ${NOTIFICATION_PROVIDER_URL:http://localhost:9092}
   wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080}
   biller-base-url: ${BILLER_BASE_URL:http://localhost:9091}
+  resend-interval-ms: ${NOTIFICATION_RESENDING_JOB:5000}
