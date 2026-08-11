@@ -52,23 +52,27 @@ public class NotificationListener {
     @RabbitListener(queues = "${notification.queue-name}")
     public void NotificationListening(String payload, @Header(AmqpHeaders.MESSAGE_ID) String messageId,@Header(AmqpHeaders.RECEIVED_ROUTING_KEY) String routingKey) {
         try {
-            NotificationEvent notificationEvent = parsingNotificationMessage(payload);
             Optional<ProcessedEvent> event_present = processedEventRepository.findByMessageId(messageId);
             if(event_present.isPresent()){ // event found
                 ProcessedEvent event = event_present.get();
                 Customer customer = notificationService.extractCustomerFromMessage(payload);
-                ProviderResponse smsResponse;
-                ProviderResponse emailResponse;
-                if(event.isEmailStatus() && event.isSmsStatus()){ // in case both notification is done
-                    return;
-                }else{ // in case one of the notification or both is not sent yet
+                if(event.getEmailState().equals(NotificationState.PENDING) || event.getSmsState().equals(NotificationState.PENDING)){
                     notificationService.deliver(event,customer,routingKey);
                 }
+
             }else { // event wasn't found
                 NotificationEvent receivedEvent = objectMapper.readValue(payload, NotificationEvent.class);
                 String cif = receivedEvent.cif();
                 Customer customer = customerRepository.findCustomerByCif(cif).orElseThrow(() -> new CustomerNotFoundException(cif));
-                ProcessedEvent event = new ProcessedEvent(messageId, false, null,false,null,LocalDateTime.now(),payload,0,LocalDateTime.now(),routingKey, NotificationState.PENDING,NotificationState.PENDING);
+                ProcessedEvent event = ProcessedEvent.builder()
+                        .messageId(messageId)
+                        .payload(payload)
+                        .routingKey(routingKey)
+                        .attempts(0)
+                        .smsState(NotificationState.PENDING)
+                        .emailState(NotificationState.PENDING)
+                        .lastAttemptAt(LocalDateTime.now())
+                        .build();
                 processedEventRepository.save(event);
                 notificationService.deliver(event,customer,routingKey);
             }

@@ -144,11 +144,64 @@ sorts — only a straight index scan gets the ordering free).
    back. Rule: **a migration that cannot roll back must be idempotent** — `IF NOT EXISTS`
    on every create, `IF EXISTS` on every drop, so a re-run skips what already landed.
 
-⏳ **Still owed on this thread:** V10/V11/V12 contract for the state columns
-(`NOT VALID` → `VALIDATE` → `SET NOT NULL`, one statement per file — mechanical repeat of
-V4/V5/V6); then a *separate later deploy* to stop dual-writing and drop the booleans
-(remove the entity field **before** dropping the column — `ddl-auto: validate` fails on a
-field with no column, but ignores a column with no field).
+✅ **Volume test — the index question, answered.** 500k rows with only 50 `PENDING` (the
+real shape of a queue table: huge history, tiny working set).
+
+| | |
+|---|---|
+| table heap | 163 MB |
+| partial index | **16 kB** — 50 entries in one leaf page |
+| literal query | Index Scan, **0.024 ms** |
+| forced seq scan | **55 ms** (500k rows filtered, then sorted) |
+| bind param, 6th/7th exec | **still Index Scan** |
+| forced generic plan | **119 ms** seq scan |
+| the live job | both indexes used, +6 scans each |
+
+The custom-plan question resolved: Postgres keeps re-planning with the real value because
+the custom plan is ~7,000× cheaper, so `auto` never switches to a generic plan. But the
+forced case proves a generic plan genuinely *cannot* use a partial index — the protection
+is the size of the cost gap, not a guarantee.
+
+**The biggest win is the idle case, not the busy one.** `fixedDelay` fires forever
+regardless of whether there is work (measured: pending=0 and `idx_scan` still climbing).
+That's ~34,560 empty polls/day. At 0.017 ms each, invisible; at 119 ms each, a permanent
+CPU burn on an idle system. The partial index is what makes "find nothing" cheap — and
+that is the real argument for the polling interval.
+
+**Retry maths validated:** 50 rows, 0.3 failure rate, cap 5 → attempts distribution
+21/17/7/3/2 and **exactly one** channel hit the cap, against a predicted 0.24. Five
+retries turn a 30% failure rate into a 0.24% chance of permanent loss.
+
+**Unplanned finding:** the pkey scan counter rose ~+98 for ~100 saves. The job holds
+**detached** entities (no `@Transactional`, `open-in-view: false`), so `save()` issues a
+`merge` = **`SELECT` before `UPDATE`** — double the write cost, invisible in the code.
+Left as-is deliberately: the alternative is holding a DB transaction across provider HTTP
+calls, which is far worse. Worth remembering before the Phase 8 load test.
+
+✅ **Schema finished (V10–V13).** State columns contracted to `NOT NULL` (`NOT VALID` →
+`VALIDATE` → `SET NOT NULL`) — grouped two statements per file this time, because the
+split rule is **by lock strength and scan cost, not statement count**: V10 is catalog-only,
+V11 scans but under a weak lock, V12 skips its scan entirely. Then dual-writing stopped,
+the entity fields removed, and `sms_status`/`email_status` **dropped** along with the three
+now-redundant `..._not_null` CHECKs (scaffolding that existed only to let `SET NOT NULL`
+skip its scan). The two value CHECKs stay — they are the substitute for a native enum.
+
+**Final schema:** `message_id` (PK/dedup), `payload`, `attempts`, `routing_key`,
+`sms_state`, `email_state` all `NOT NULL`; `sms_sent_at` / `email_sent_at` /
+`last_attempt_at` nullable audit columns; two state-keyed partial indexes; nothing else.
+Verified end to end after the drop — transfer → outbox → relay → queue → listener →
+provider → state, with `ddl-auto: validate` passing.
+
+**Decision:** `last_attempt_at` stays **audit-only — no backoff**. Retries fire at a fixed
+interval. Noted as a deliberate choice, not an oversight: exponential backoff (query rows
+whose `last_attempt_at` is older than the backoff for their attempt count) is the obvious
+upgrade if a sustained provider outage ever burns all five attempts inside five minutes.
+
+⏳ **Deferred, all non-blocking:** the listener parses the payload twice and does the
+customer lookup before the `PENDING` guard (a wasted parse + query per duplicate);
+`extractCustomerFromMessage` is bypassed in the new-event branch; the `FAILED` bucket
+cannot distinguish "provider down" from "customer gone" from "payload corrupt" — one more
+`CHECK` swap if that ever matters operationally.
 
 ✅ **Retry job DONE** (`ResendingJob`). `@Scheduled`, **two** queries — one per channel,
 each matching one partial index (a single `OR` across both columns could use neither) —
@@ -176,9 +229,15 @@ indistinguishable: the tiny table (certain) and the parameterised-enum/custom-pl
 (`sms_state = ?` needs a custom plan for the planner to prove it implies the partial
 index). Only a volume fixture separates them.
 
-◀ **NEXT — decide the volume test** (prove the index is actually used at scale, same shape
-as the 1M-row indexing experiment), then the V10/V11/V12 `NOT NULL` contract for the state
-columns.
+◀ **NEXT — service #3 is DONE. Pick the next thread:**
+1. **Bill service publishes `BillPaid` / `BillRejected`** — notifications currently only
+   ever sees wallet events. Note the open policy question: a bill reserve already emits a
+   wallet event, so a bill payment would produce a wallet notification *and* a bill one;
+   suppression is a notifications-side call.
+2. **Correlation IDs** (Bucket D) — already agreed to land **before** the Phase 7 sabotage
+   pass, because Phase 7 is unreadable without them. Pervasive and expensive to retrofit.
+3. **History service #4** — the last of the four; CDC/Debezium was raised as a
+   learning interest.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and
@@ -681,6 +740,13 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 - `NOT VALID` means "existing rows unchecked", **not** "not enforced" — new rows are rejected immediately. That asymmetry is what makes the gap between the two migrations safe.
 - `SET NOT NULL` skips its verification scan iff a **validated** `CHECK (col IS NOT NULL)` already proves the property (PG 12+). Alone, it full-scans under `ACCESS EXCLUSIVE`.
 - DDL waits for its lock **at the head of the queue** — every query arriving behind it also waits. One idle-in-transaction session + a migration = a fully stalled table. Set `lock_timeout` before DDL in production.
+- **A column DEFAULT only fires when the column is omitted from the INSERT.** Hibernate includes every insertable mapped column, so it sends an explicit `NULL` and the default never applies — the only way to let it fire is `insertable = false` (which is why `created_at` has it). An unset `@Builder` field is still `NULL`, not absent.
+- `@Builder` trades a compile-time completeness check for readability: forget a field and it compiles, then fails at insert against `NOT NULL`. A positional constructor would have refused to compile. Worth it on a wide entity; not free.
+- Split migrations **by lock strength and scan cost, not statement count**. Grouping is safe when a file contains only catalog-only ops, or only weak-lock scans — the V4/V5 split was needed because a *strong* lock was taken in statement 1 and held across a *scan* in statement 2.
+- **Idempotency is required only where rollback is impossible.** `IF EXISTS`/`IF NOT EXISTS` are mandatory in a non-transactional migration and merely optional in a transactional one, where a failure rolls back and the retry starts clean.
+- `@Deprecated` on a field changes nothing at runtime — Hibernate still maps and writes it. A deprecation window is for public APIs with consumers you don't control, not private fields with zero readers.
+- **Never hold a DB transaction across a network call you don't control.** `@Transactional` on a batch job that makes HTTP calls sets the transaction's duration by someone else's timeout, and a rollback undoes state for rows whose messages were already sent — turning a retry into a duplicate generator.
+- A redundant guard can be worse than useless: `attempts < MAX` alongside a state check is redundant *today*, but **lowering** the config strands rows as `PENDING` forever (skipped by the guard, never marked `FAILED`, `attempts` climbing) — resurrecting the original bug via a config tweak. Let state alone decide.
 - `CREATE INDEX CONCURRENTLY` + Flyway **deadlocks by default**: the build waits for all open transactions, and Flyway holds one for its history lock. Needs `spring.flyway.postgresql.transactional-lock: false`. Diagnose with `pg_blocking_pids()` — a hang shows no error and no history row, so it looks like nothing happened.
 - **A migration that cannot roll back must be idempotent.** With `executeInTransaction=false` a mid-file failure leaves earlier statements permanently applied and unrecorded, so every statement needs `IF EXISTS` / `IF NOT EXISTS` to survive the retry.
 - Keyword order is `CREATE INDEX CONCURRENTLY IF NOT EXISTS` — `CONCURRENTLY` first.
@@ -698,6 +764,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-08-11 | **Service #3 complete.** Retry job (`ResendingJob`) built and verified. **Volume test settled the open index question**: at 500k rows / 50 pending, the partial index is 16 kB and serves the live job's bind-parameter query (0.024 ms vs 55 ms seq scan); a *forced* generic plan does fall back to a 119 ms seq scan, so the protection is the cost gap, not a guarantee. Key insight: the index's biggest win is the **idle** poll, not the busy one — `fixedDelay` runs forever whether or not there is work. Retry maths validated (0.3 failure rate × 5 attempts → predicted 0.24 permanent failures, observed exactly 1). Then **V10–V13 finished the schema**: state columns `NOT NULL`, dual-writing stopped, entity fields removed, booleans and three scaffolding CHECKs dropped. Verified end to end after the drop. Decision: `last_attempt_at` stays audit-only, **no backoff**. NEXT ACTION → pick between bill-service events, correlation IDs, or history #4. |
 | 2026-08-10 | **Terminal state added** (V7 `varchar`+`CHECK`, V8 three-branch `CASE` backfill, dual-write in `deliver()`). Root cause named: a boolean cannot distinguish *pending* from *gave up*, so the partial index could never shed dead rows and `attempts` incremented forever. Rejected along the way: a native PG enum (breaks Hibernate varchar binding — reproduced), `attempts` in the index predicate (couples schema to config, fails asymmetrically and silently), and archiving delivered rows (re-opens duplicate sends — the dedup ledger's lifetime is a *time* question, not a status one). Contract steps V9–V11 + index switch still owed. |
 | 2026-08-09 | **Notification chain verified end to end**, and `routing_key` added to `processed_events` via the full **expand-contract** dance (V2 nullable → code populates → V3 idempotent backfill to `'unknown'` → V4 `NOT VALID` / V5 `VALIDATE` / V6 `SET NOT NULL`, one statement per file so Flyway's per-file transaction cannot hold `ACCESS EXCLUSIVE` across the scan). Two bugs found by reading data rather than code: `sms_sent_at` left null on success, then set unconditionally producing contradictory rows. NEXT ACTION → the **retry job**. |
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |

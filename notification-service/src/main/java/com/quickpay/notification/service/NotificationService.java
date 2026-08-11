@@ -43,12 +43,12 @@ public class NotificationService {
 
 
 
-        if (!event.isSmsStatus() && event.getAttempts() < MAXIMUM_RETRIES) {
+        if (event.getSmsState().equals(NotificationState.PENDING) && event.getAttempts() < MAXIMUM_RETRIES) {
             ProviderResponse response = notificationProviderClient
                     .smsProvider(customer.getPhoneNumber(), message, event.getMessageId());
-            event.setSmsStatus(response.status() == NotificationStatus.SENT);
+            //event.setSmsStatus(response.status() == NotificationStatus.SENT); --- deprecated
             event.setSmsState(response.status() == NotificationStatus.SENT ? NotificationState.SENT : NotificationState.PENDING);
-            if (event.isSmsStatus()) {
+            if (event.getSmsState().equals(NotificationState.SENT)) {
                 event.setSmsSentAt(LocalDateTime.now());
             } else {
                 event.setSmsSentAt(null);
@@ -60,12 +60,12 @@ public class NotificationService {
             }
         }
 
-        if (!event.isEmailStatus() && event.getAttempts() < MAXIMUM_RETRIES) {
+        if (event.getEmailState().equals(NotificationState.PENDING) && event.getAttempts() < MAXIMUM_RETRIES) {
             ProviderResponse response = notificationProviderClient
                     .emailProvider(customer.getEmail(), message, event.getMessageId());
-            event.setEmailStatus(response.status() == NotificationStatus.SENT);
+            //event.setEmailStatus(response.status() == NotificationStatus.SENT); --- deprecated
             event.setEmailState(response.status() == NotificationStatus.SENT ? NotificationState.SENT : NotificationState.PENDING);
-            if (event.isEmailStatus()) {
+            if (event.getEmailState().equals(NotificationState.SENT)) {
                 event.setEmailSentAt(LocalDateTime.now());
             } else {
                 event.setEmailSentAt(null);

@@ -2,10 +2,7 @@ package com.quickpay.notification.domain;
 
 import com.quickpay.notification.enums.NotificationState;
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import lombok.Setter;
+import lombok.*;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -15,16 +12,13 @@ import java.time.LocalDateTime;
 @AllArgsConstructor @NoArgsConstructor
 @Entity
 @Table(name = "processed_events")
+@Builder
 public class ProcessedEvent {
 
     @Id
     private String messageId;
 
-    private boolean smsStatus;
-
     private LocalDateTime smsSentAt;
-
-    private boolean emailStatus;
 
     private LocalDateTime emailSentAt;
 
