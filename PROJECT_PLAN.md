@@ -229,15 +229,55 @@ indistinguishable: the tiny table (certain) and the parameterised-enum/custom-pl
 (`sms_state = ?` needs a custom plan for the planner to prove it implies the partial
 index). Only a volume fixture separates them.
 
-◀ **NEXT — service #3 is DONE. Pick the next thread:**
+✅ **TRACEABILITY DONE (Bucket D)** — landed ahead of Phase 7 as agreed, because a
+sabotaged flow across three services is unreadable without it.
+
+**MDC is per-thread and per-JVM — there is no shared store.** The id propagates by being
+*copied* at every boundary, and each boundary needs its own mechanism:
+
+| boundary | mechanism | why |
+|---|---|---|
+| inbound HTTP | `CorrelationIdFilter` — **accept if present, generate if absent** | generating unconditionally mints a fresh id per hop and breaks the chain |
+| outbound HTTP | `RestClient` request interceptor (mirror of the filter) | reads MDC → header |
+| `@Async` | `CustomTaskDecorator` | `decorate()` runs on the **caller** (capture), the returned `Runnable` on the **worker** (restore) |
+| `@Scheduled` | generate a **run id** per firing (`relay-`, `eod-`, …) | nothing to inherit; groups one sweep's work |
+| **outbox → relay** | **a database column** (V12 / V14) | the writer thread is dead and its MDC wiped — nothing to copy |
+| AMQP | built-in `correlation_id` property | symmetry with `message_id`, visible in the management UI |
+
+**Two ids, two jobs.** A batch job's own MDC describes *the run*; each item carries *its
+own* stored id. Publishing the run id onto messages would merge a hundred unrelated
+customers into one apparent trace — worse than no id, because it looks correct.
+
+**Fail open for diagnostics.** Both correlation columns are permanently nullable: the
+outbox write is inside the money-move transaction, so `NOT NULL` would roll back a
+transfer over a missing debugging field. The same rule forced a **length cap in the
+filters** — an oversized inbound header would overflow `varchar(70)` and roll back the
+transfer, defeating the rule through the back door. Generate rather than truncate: a
+truncated id looks real and matches nothing upstream.
+
+**A correlation id is a key with nothing to unlock unless something logs.** The plumbing
+was complete and *invisible* — a grep returned one unrelated warning, because 15 of the
+wallet's 16 logger calls were in `GlobalExceptionHandler`. Three `INFO` lines at the
+boundaries (ledger written / event published / message received) turned it into a real
+trace: **one transfer → five lines across two JVMs, four threads and a broker, from a
+single grep.**
+
+File logging added to all three services under `logs/` (gitignored, appends across
+restarts, rolls at 10 MB).
+
+⏳ **Deferred:** `deliver()` still logs nothing, so the trace stops at "message received" —
+the SMS send and the `SENT` transition are invisible. The MDC key is a string literal in
+~6 places; a typo fails **silently**. Notification's provider `RestClient` has no
+interceptor, so the outbound provider call is untraced.
+
+◀ **NEXT — pick the next thread:**
 1. **Bill service publishes `BillPaid` / `BillRejected`** — notifications currently only
    ever sees wallet events. Note the open policy question: a bill reserve already emits a
    wallet event, so a bill payment would produce a wallet notification *and* a bill one;
-   suppression is a notifications-side call.
-2. **Correlation IDs** (Bucket D) — already agreed to land **before** the Phase 7 sabotage
-   pass, because Phase 7 is unreadable without them. Pervasive and expensive to retrofit.
-3. **History service #4** — the last of the four; CDC/Debezium was raised as a
+   suppression is a notifications-side call. Its outbox will need a correlation column too.
+2. **History service #4** — the last of the four; CDC/Debezium was raised as a
    learning interest.
+3. **Phase 7 sabotage** — now unblocked, since traceability has landed.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and
@@ -747,6 +787,13 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 - `@Deprecated` on a field changes nothing at runtime — Hibernate still maps and writes it. A deprecation window is for public APIs with consumers you don't control, not private fields with zero readers.
 - **Never hold a DB transaction across a network call you don't control.** `@Transactional` on a batch job that makes HTTP calls sets the transaction's duration by someone else's timeout, and a rollback undoes state for rows whose messages were already sent — turning a retry into a duplicate generator.
 - A redundant guard can be worse than useless: `attempts < MAX` alongside a state check is redundant *today*, but **lowering** the config strands rows as `PENDING` forever (skipped by the guard, never marked `FAILED`, `attempts` climbing) — resurrecting the original bug via a config tweak. Let state alone decide.
+- **MDC is a `ThreadLocal` per JVM — nothing is shared.** Every thread boundary needs its own copy mechanism, and a boundary separated by *time* (outbox → relay) can only be crossed by persisting the value.
+- `@Header(..., required = false)` on a listener is mandatory for optional metadata — Spring's default throws *before* the method body, outside the catch blocks, producing the requeue hot loop those catches exist to prevent.
+- Null-guard polarity: `x != null && x.f()` when asking "is it usable?", `x == null || x.f()` when asking "is it unusable?". The null check must be the operand that short-circuits the other away — `!= null || ...` evaluates the right side precisely when the reference is null.
+- **Observability must never block a business transaction.** Diagnostic columns stay nullable, and any value accepted from outside must be length-capped at the edge or it becomes a rollback vector.
+- In a batch job, the job's MDC describes *the run*; each item carries *its own* id. Conflating them merges unrelated flows into one trace that looks correct.
+- MDC exists so you **don't** thread the value through method signatures — a parameter gives it to one method, MDC gives it to every method on the thread.
+- `@Transactional` on a batch job that makes network calls is a bug: it sets the transaction's duration by someone else's timeout, and a rollback undoes state for work already delivered.
 - `CREATE INDEX CONCURRENTLY` + Flyway **deadlocks by default**: the build waits for all open transactions, and Flyway holds one for its history lock. Needs `spring.flyway.postgresql.transactional-lock: false`. Diagnose with `pg_blocking_pids()` — a hang shows no error and no history row, so it looks like nothing happened.
 - **A migration that cannot roll back must be idempotent.** With `executeInTransaction=false` a mid-file failure leaves earlier statements permanently applied and unrecorded, so every statement needs `IF EXISTS` / `IF NOT EXISTS` to survive the retry.
 - Keyword order is `CREATE INDEX CONCURRENTLY IF NOT EXISTS` — `CONCURRENTLY` first.
@@ -764,6 +811,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-08-15 | **Traceability complete (Bucket D)** — correlation ids now span inbound/outbound HTTP, `@Async`, `@Scheduled`, the outbox (V12/V14) and AMQP, across all three services. Landed ahead of Phase 7 as planned. Key lessons: MDC is per-thread so every boundary needs its own copy mechanism and a *time* gap can only be crossed by persistence; run-id vs item-id must never be conflated; diagnostics fail open (nullable columns + a length cap at the edge, or a header rolls back a transfer); and the plumbing is worthless without log lines — a grep returned one unrelated warning until three boundary `INFO`s were added. Verified: one transfer → five lines, two JVMs, four threads, one broker, one grep. NEXT ACTION → bill events, history #4, or Phase 7. |
 | 2026-08-11 | **Service #3 complete.** Retry job (`ResendingJob`) built and verified. **Volume test settled the open index question**: at 500k rows / 50 pending, the partial index is 16 kB and serves the live job's bind-parameter query (0.024 ms vs 55 ms seq scan); a *forced* generic plan does fall back to a 119 ms seq scan, so the protection is the cost gap, not a guarantee. Key insight: the index's biggest win is the **idle** poll, not the busy one — `fixedDelay` runs forever whether or not there is work. Retry maths validated (0.3 failure rate × 5 attempts → predicted 0.24 permanent failures, observed exactly 1). Then **V10–V13 finished the schema**: state columns `NOT NULL`, dual-writing stopped, entity fields removed, booleans and three scaffolding CHECKs dropped. Verified end to end after the drop. Decision: `last_attempt_at` stays audit-only, **no backoff**. NEXT ACTION → pick between bill-service events, correlation IDs, or history #4. |
 | 2026-08-10 | **Terminal state added** (V7 `varchar`+`CHECK`, V8 three-branch `CASE` backfill, dual-write in `deliver()`). Root cause named: a boolean cannot distinguish *pending* from *gave up*, so the partial index could never shed dead rows and `attempts` incremented forever. Rejected along the way: a native PG enum (breaks Hibernate varchar binding — reproduced), `attempts` in the index predicate (couples schema to config, fails asymmetrically and silently), and archiving delivered rows (re-opens duplicate sends — the dedup ledger's lifetime is a *time* question, not a status one). Contract steps V9–V11 + index switch still owed. |
 | 2026-08-09 | **Notification chain verified end to end**, and `routing_key` added to `processed_events` via the full **expand-contract** dance (V2 nullable → code populates → V3 idempotent backfill to `'unknown'` → V4 `NOT VALID` / V5 `VALIDATE` / V6 `SET NOT NULL`, one statement per file so Flyway's per-file transaction cannot hold `ACCESS EXCLUSIVE` across the scan). Two bugs found by reading data rather than code: `sms_sent_at` left null on success, then set unconditionally producing contradictory rows. NEXT ACTION → the **retry job**. |
