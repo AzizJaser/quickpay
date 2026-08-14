@@ -5,14 +5,17 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-06 (rev 8 — notification consumer built; end-to-end run is next)**
+> Last updated: **2026-08-15 (rev 9 — service #3 complete; traceability complete; Phase 7 unblocked)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Build notifications (service #3, req 5) — continue. Outbox → relay → consumer is
-verified end to end; next is the RETRY JOB that picks up failed sends.**
+**Service #3 (notifications) is COMPLETE and traceability (Bucket D) is COMPLETE.
+Phase 7 sabotage is now unblocked. Choose the next thread — see "NEXT" below.**
+
+*(The rest of this section is the history of how #3 and traceability were built. The
+decision point is the ◀ NEXT block further down.)*
 
 ✅ **Done so far** (branch `feat/notifications`, pushed):
 - RabbitMQ in docker-compose — AMQP 5672, management UI http://localhost:15672
