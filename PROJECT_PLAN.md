@@ -280,7 +280,18 @@ interceptor, so the outbound provider call is untraced.
    suppression is a notifications-side call. Its outbox will need a correlation column too.
 2. **History service #4** — the last of the four; CDC/Debezium was raised as a
    learning interest.
-3. **Phase 7 sabotage** — now unblocked, since traceability has landed.
+3. **Phase 7 sabotage** — the *traceability gate* is now cleared, but the **build is not
+   finished**: the bill service still publishes nothing, and history #4 does not exist.
+   Sabotaging an incomplete system means repeating the pass once those land. **Finish 1
+   and 2 first**, then sabotage the whole thing once.
+
+**Still missing to be feature-complete (4 services, req 5):**
+- bill → notification: no `BillPaid` / `BillRejected` events yet, so notifications only
+  ever sees wallet events. Needs its own outbox + a correlation column (V12's shape).
+- history #4: not started. Read model over wallet + bill; CDC/Debezium raised as the
+  learning angle. Will need the correlation id carried through whatever CDC path is used —
+  worth checking early, since Debezium reads the WAL and sees only columns, which is
+  another argument for the id living *in the row* rather than in memory.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and
