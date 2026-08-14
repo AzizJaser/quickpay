@@ -35,6 +35,10 @@ server:
   port: 8082   # wallet=8080, bill=8081, notification=8082, gateway-sim=9090, biller-sim=9091
 
 logging:
+  file:
+    name: logs/bill-service.log
+  pattern:
+    level: "%5p [%X{correlationId:-}]"
   level:
     org.hibernate.SQL: debug
 
