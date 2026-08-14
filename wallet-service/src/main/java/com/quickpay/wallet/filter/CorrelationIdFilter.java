@@ -18,13 +18,16 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
 
     private static final String CORRELATION_HEADER = "X-Correlation-ID";
     private static final String MDC_KEY = "correlationId";
+    private static final int MAX_LENGTH= 70;
 
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
 
-        if(request.getHeader(CORRELATION_HEADER) != null && !request.getHeader(CORRELATION_HEADER).isBlank()){ //if the correlation is present
+        if(request.getHeader(CORRELATION_HEADER) != null &&
+                !request.getHeader(CORRELATION_HEADER).isBlank() &&
+                request.getHeader(CORRELATION_HEADER).length() <= MAX_LENGTH){ //if the correlation is present
 
             MDC.put(MDC_KEY,request.getHeader(CORRELATION_HEADER));
 

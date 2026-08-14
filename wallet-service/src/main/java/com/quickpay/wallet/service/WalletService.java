@@ -15,6 +15,7 @@ import com.quickpay.wallet.repository.WalletRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -92,6 +93,7 @@ public class WalletService {
         if (!creditedWallet.isInternal()){
             notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
         }
+        logger.info("ledger with entry id {} saved",entry.getEntryId());
         return entry;
     }
 
@@ -175,7 +177,7 @@ public class WalletService {
         } catch (JsonProcessingException e) {
             throw new ParsingNotificationEventException(entryId);
         }
-        NotificationEvent event = new NotificationEvent(payload,null,eventType,UUID.randomUUID());
+        NotificationEvent event = new NotificationEvent(payload,null,eventType,UUID.randomUUID(), MDC.get("correlationId"));
         return event;
     }
 }

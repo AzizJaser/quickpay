@@ -49,9 +49,11 @@ public class NotificationPublisherJob {
                             message -> {
                                 message.getMessageProperties().setMessageId(event.getEventId().toString());
                                 message.getMessageProperties().setContentType("application/json");
+                                message.getMessageProperties().setCorrelationId(event.getCorrelationId());
                                 return message;
                             });
                     event.setSentAt(LocalDateTime.now());
+                    logger.info("event id {} of type {} is sent with correlation id {}",event.getEventId(),event.getEventType(),event.getCorrelationId());
                     notificationEventRepository.save(event);
                 }catch(Exception e){
                     logger.warn("error when sending notification for event id = {}",event.getEventId());

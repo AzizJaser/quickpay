@@ -41,4 +41,6 @@ public class ProcessedEvent {
     @Enumerated(EnumType.STRING)
     private NotificationState emailState;
 
+    private String correlationId;
+
 }

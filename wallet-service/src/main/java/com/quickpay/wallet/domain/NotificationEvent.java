@@ -33,10 +33,13 @@ public class NotificationEvent {
     @Column(insertable = false, updatable = false)
     private LocalDateTime createdAt;
 
-    public NotificationEvent(String payload, LocalDateTime sentAt, String eventType, UUID eventId) {
+    private String correlationId;
+
+    public NotificationEvent(String payload, LocalDateTime sentAt, String eventType, UUID eventId,String correlationId) {
         this.payload = payload;
         this.sentAt = sentAt;
         this.eventType = eventType;
         this.eventId = eventId;
+        this.correlationId = correlationId;
     }
 }

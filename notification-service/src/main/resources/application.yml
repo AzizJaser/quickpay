@@ -36,7 +36,7 @@ server:
 
 logging:
   file:
-    name: logs/bill-service.log
+    name: logs/notification-service.log
   pattern:
     level: "%5p [%X{correlationId:-}]"
   level:
