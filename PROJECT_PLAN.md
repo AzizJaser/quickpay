@@ -273,6 +273,68 @@ the SMS send and the `SENT` transition are invisible. The MDC key is a string li
 ~6 places; a typo fails **silently**. Notification's provider `RestClient` has no
 interceptor, so the outbound provider call is untraced.
 
+### ▶ IN PROGRESS — ledger transaction types (decided, not yet built)
+
+**The gap:** `ledger` records `entry_id, debited, credited, amounts, idempotency_key,
+created_at, reverses_entry_id` — and **no business meaning**. Every row is "a transfer".
+This blocks statements, analytics and the deferred AI feature, so it is a **prerequisite
+for history #4**, not a refinement.
+
+**Rejected — deriving the type from account numbers at runtime.** It is *possible* today
+(`001`=topup, `002`=outward, `003`=suspense, `004`=bill) but: it leaks wallet internals
+across a service boundary (history #4 via CDC would hardcode "account 004 = bill"), it
+cannot distinguish flows that share a shape, it discards intent that was known at write
+time, and every consumer re-implements the same mapping and drifts.
+
+**DECIDED — money-movement kinds, not products.** The wallet never learns what a "bill" is:
+
+| kind | movement | flow |
+|---|---|---|
+| `DEPOSIT` | outside → customer | top-up (`001 → customer`) |
+| `WITHDRAWAL` | customer → outside | withdraw (`customer → 002`) |
+| `TRANSFER` | customer → customer | P2P |
+| `HOLD` | customer → suspense | bill reserve |
+| `SETTLEMENT` | suspense → beneficiary | bill capture |
+| `RELEASE` | suspense → customer | bill reversal |
+
+Immediate payoff: `SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = money currently held.
+On today's data that is **4**, while the bill service reports **5** bills `Reserved` —
+a discrepancy worth chasing once the column exists, and a question the ledger could not
+even be asked before.
+
+**DECIDED — `varchar` + `CHECK`, not an int code.** An int makes the database unreadable
+(`3` means nothing), forces every consumer — including CDC — to carry the mapping, and if
+it is an enum ordinal, reordering silently rewrites history. The "freedom to rename"
+argument conflates two things: the **identifier** (`BILL_PAYMENT`, ~never changes) and the
+**display label** ("Bill Payment" / "دفع فاتورة", changes often and per language). The
+label is a presentation mapping in #4 regardless; the int buys nothing and costs legibility.
+
+**DECIDED — type assigned server-side from dedicated endpoints**, not a caller-supplied
+field. Unforgeable, and it gives each operation its own preconditions (a `HOLD` can fail on
+insufficient balance and is customer-facing; a `SETTLEMENT` should never fail on balance,
+so a failure there is an ops alarm). Add `/v1/transfer/hold` and `/v1/transfer/settle` to
+`LedgerEntryController` — **generic names, not a `BillController`**, which would put bill
+vocabulary back into the wallet and undo the decision above. `/revers` needs no sibling:
+reversing a `HOLD` *is* a `RELEASE`, so the type derives from the target entry.
+
+**DECIDED — no `purpose` column and no `counterparty_ref`.** Both are the read model's job.
+History #4 consumes wallet *and* bill events and joins them on the correlation id, so
+`HOLD` + a bill event carrying the biller = a bill payment, with product meaning owned by
+the service that knows it. Copying the biller code into the ledger would create two sources
+of truth for one fact.
+
+⚠️ **Known residual risks, accepted:**
+- `HOLD` currently means "bill" only because the bill service is the sole caller. Add
+  merchant payments later and it becomes ambiguous, with no way to re-derive history.
+- **Nobody records the destination bank** for a withdrawal — one generic `Outward Transfer`
+  account for all outbound money. Fix is per-bank internal accounts (the credited account
+  identifies the bank), not a new column. Parked deliberately.
+
+**Build order:** `V13` nullable `varchar(20)` + `CHECK` → endpoints assign it →
+backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
+`UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
+lesson) → contract to `NOT NULL`.
+
 ◀ **NEXT — pick the next thread:**
 1. **Bill service publishes `BillPaid` / `BillRejected`** — notifications currently only
    ever sees wallet events. Note the open policy question: a bill reserve already emits a
