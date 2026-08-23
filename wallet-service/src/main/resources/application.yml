@@ -22,10 +22,22 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  # Broker connection only. The exchange/queue topology and the publishing code are
+  # yours to write — this just tells Spring where RabbitMQ is (docker-compose).
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:quickpay}
+    password: ${RABBITMQ_PASS:quickpay}
+
 server:
   port: 8080
 
 logging:
+  file:
+    name: logs/wallet-service.log
+  pattern:
+    level: "%5p [%X{correlationId:-}]"
   level:
     org.hibernate.SQL: debug   # see the SQL Hibernate generates while you learn
 
@@ -34,3 +46,5 @@ wallet:
   create-max-retries: ${WALLET_CREATE_MAX_RETRIES:5}
   reconciliation-interval-ms: ${WALLET_RECONCILIATION_INTERVAL_MS:60000}
   gateway.webhook-secret: ${WALLET_WEBHOOK_SECRET:"super-secret-key"}
+  notification-interval-ms: ${WALLET_NOTIFICATION_INTERVAL_MS:2000}
+  events-exchange: ${WALLET_EVENTS_EXCHANGE:quickpay.events}

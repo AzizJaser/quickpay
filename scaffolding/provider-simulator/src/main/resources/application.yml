@@ -1,0 +1,10 @@
+server:
+  port: 9092   # wallet=8080, bill=8081, notification=8082, gateway-sim=9090, biller-sim=9091
+
+provider:
+  # NORMAL-mode behaviour (used when no outcome is forced via POST /simulate/mode).
+  # Requirement 5 says the notification channel "fails regularly" — so unlike the biller
+  # sim, this one defaults to a non-zero failure rate. Set it to 0.0 for a quiet run.
+  failure-rate: 0.3        # 0.0 = always succeed, 1.0 = always fail
+  default-delay-ms: 0      # artificial latency on every send (a slow provider)
+  timeout-sleep-ms: 5000   # how long TIMEOUT mode sleeps before answering

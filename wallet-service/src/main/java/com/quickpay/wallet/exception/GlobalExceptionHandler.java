@@ -114,4 +114,9 @@ public class GlobalExceptionHandler {
         problem.setTitle("entry Not Found");
         return problem;
     }
+
+    @ExceptionHandler(ParsingNotificationEventException.class)
+    public void handlerParsingNotificationEventException(ParsingNotificationEventException e){
+        logger.error("Can not serialise a notification event for entry ID: {}",e.getEntryId());
+    }
 }

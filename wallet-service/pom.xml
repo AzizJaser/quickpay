@@ -44,6 +44,14 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- RabbitMQ (AMQP) — the wallet publishes domain events for notifications and
+             history to consume. See ADR-0005. Gives you RabbitTemplate + the auto-config
+             that reads spring.rabbitmq.* below. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
         <!-- Postgres driver (runtime only) -->
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -89,6 +97,12 @@
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>7.4</version>
         </dependency>
     </dependencies>
 

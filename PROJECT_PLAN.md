@@ -5,25 +5,375 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-01 (rev 5 — RabbitMQ decision made; ADR-0005; sponsor log opened)**
+> Last updated: **2026-08-15 (rev 9 — service #3 complete; traceability complete; Phase 7 unblocked)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Build notifications (service #3, req 5)** — the first RabbitMQ work.
+**Service #3 (notifications) is COMPLETE and traceability (Bucket D) is COMPLETE.
+Phase 7 sabotage is now unblocked. Choose the next thread — see "NEXT" below.**
 
-**Step 0, before any publishing code: decide reliable publishing.** Adopting a broker
-does not solve this by itself. If a service commits a money movement and *then* publishes,
-a failed publish means money moved with **no event** — history is silently wrong forever
-and no notification is ever sent. The expected answer is the **transactional outbox**
-(write the event to an `outbox` table in the *same transaction* as the money move; a
-poller ships it to the broker and marks it sent) — the same write-ahead shape already
-used for the bill record. Decide it, and log it as ADR-0006. See ADR-0005's open
-follow-up.
+*(The rest of this section is the history of how #3 and traceability were built. The
+decision point is the ◀ NEXT block further down.)*
 
-Then: RabbitMQ in docker-compose, the event contract (who publishes what), the
-notifications module, and consumers. **One increment per session.**
+✅ **Done so far** (branch `feat/notifications`, pushed):
+- RabbitMQ in docker-compose — AMQP 5672, management UI http://localhost:15672
+  (quickpay/quickpay). `spring-boot-starter-amqp` + `spring.rabbitmq.*` in the wallet.
+- **Reliable publishing decided: transactional outbox** (was Step 0). Rejected
+  "write the row only when publishing fails" — a crash between commit and publish
+  skips the failure handler entirely, so the event is lost with no trace. The row
+  must be written *in the same transaction as the money move*: if the money is
+  committed, the obligation is committed.
+- **V11 `outbox_notification`** + `NotificationEvent` entity + repository +
+  `MoneyMovedPayload` record. Write lives inside `transfer`'s `@Transactional`.
+  One event per **customer leg** (`!wallet.isInternal()`): top-up → 1, P2P → 2,
+  suspense/biller legs → 0. Event types `money-sent` / `money-received`.
+  Serialisation failure → unchecked `ParsingNotificationEventException` → rollback
+  (fail closed: never move money you cannot account for).
+- Partial index `(created_at) WHERE sent_at IS NULL` — holds only the unsent
+  backlog, ~8 kB regardless of table size, and eliminates the sort.
+- Verified: top-up → 1 row, P2P → 2 rows, both `sent_at` null; a transfer failing on
+  insufficient balance writes **neither** a ledger row nor an outbox row (atomicity).
+
+✅ **Relay job DONE** (`c6c8af6`): `NotificationPublisherJob` polls
+`findTop100BySentAtIsNullOrderByCreatedAtAsc()` (matches the V11 partial index
+exactly), publishes each to the **`quickpay.events`** topic exchange, then marks
+`sent_at`. **Publish first, mark second** — marking first would lose the event on a
+failed publish; this way it just retries. At-least-once by design. Each message
+carries the outbox id as the AMQP **`message_id`** (the consumer's dedup key) plus
+`contentType: application/json`. Per-event try/catch so one bad event can't abort the
+batch. Routing keys are dotted — `wallet.money.sent` / `wallet.money.received` — so
+consumers bind selectively (`wallet.money.*`, `wallet.#`) without the publisher
+knowing they exist. Verified on the broker: right keys, right message_id, right
+content type; outbox rows flip to sent.
+
+**Broker gotcha learned:** Spring declares exchanges **lazily, on first connection**,
+not at app startup. The exchange won't exist until the first message is published —
+don't assume topology exists just because the service is up.
+
+✅ **Notification service (#3) BUILT** — module, own DB on 5434, port 8082, V1 schema
+(`customers` + `processed_events` with two partial indexes), entities, repositories,
+queue+binding topology, provider client, and the consumer. Committed on `feat/notifications`.
+
+✅ **Provider simulator** (`scaffolding/provider-simulator`, port 9092) — mock SMS/email
+with `/simulate/mode` forcing SENT / FAILED / SERVER_ERROR / TIMEOUT and a **0.3 default
+failure rate**, because requirement 5 says the channel "fails regularly" and a log-only
+sender would have left the whole retry design as unreachable code. Sends are idempotent
+per (channel, reference).
+
+**Design decisions made:**
+- Customers are **seeded**, so an unknown `cif` means "never notify" → log and drop,
+  write no row (a row would be permanent retry fodder — there is no "undeliverable" state).
+- **Contact details are looked up fresh at delivery time**, never snapshotted into the
+  event — so a changed phone number applies to retries too. This is why events carry
+  `cif` and not contact details.
+- The listener **never throws**: an escape means requeue, and a malformed payload or
+  unknown customer fails identically forever — a hot loop. Log and return instead.
+- `deliver(event, customer, routingKey)` is shared by the new-event and retry paths;
+  the retry job will be its third caller. Message text resolved **once** from the routing
+  key (the payload carries no direction).
+
+✅ **END-TO-END VERIFIED** — customers seeded, full chain exercised: transfer → outbox →
+relay → `quickpay.events` → queue → listener → provider. Outbox rows flip to `sent_at`,
+`processed_events` rows appear with per-channel status. Both failure and success paths
+driven via `/simulate/mode`.
+
+**Bug found by reading the data (not the code):** `sms_status = true` but `sms_sent_at`
+null. First fix set the timestamp unconditionally, which produced the *contradictory*
+state `status = false, sent_at = <time>`. Correct rule: **the timestamp is set only on
+success and nulled on failure** — status and timestamp must never disagree.
+
+✅ **`routing_key` added via the full expand-contract dance** (V2–V6). Needed because the
+retry job must know the direction (`wallet.money.sent` vs `...received`) to render a
+message, and the direction lives *only* in the AMQP routing key — the stored payload
+does not carry it.
+
+| step | migration | what it bought |
+|---|---|---|
+| 1. Expand | V2 — **nullable** column | old rows and new code coexist; no downtime |
+| 2. Populate | entity + listener | proven live: 3 new rows carried real keys while 12 old stayed null |
+| 3. Backfill | V3 — `UPDATE … WHERE routing_key IS NULL` → `'unknown'` | idempotent; every row satisfies the constraint *before* it exists |
+| 4. Contract | V4 `NOT VALID` → V5 `VALIDATE` → V6 `SET NOT NULL` | the blocking full-table scan is decomposed away |
+
+Sentinel is `'unknown'`, not a guessed direction — the true value is underivable from the
+stored payload, and an honest sentinel prompts the right question later where a plausible
+guess would be quietly believed. Verified after apply: `attnotnull = t` **and**
+`convalidated = t`; a null insert is rejected by the column-level NOT NULL (which Postgres
+checks *before* table constraints), leaving the CHECK as droppable scaffolding.
+
+✅ **Terminal state added (V7/V8 + dual-write).** A `boolean` holds two values but the
+system has three situations: *pending*, *sent*, and *tried N times and gave up*. With a
+boolean, the last two are both `false`, so the partial index `WHERE sms_status = false`
+could never shed dead rows — it would grow forever — and the unconditional `attempts++`
+kept incrementing rows nobody would ever send. **Both bugs were one root cause: no way to
+say "done, but not successfully."**
+
+Fix: `sms_state` / `email_state` as `varchar(10)` + `CHECK` (**not** a native PG enum —
+§9; reproduced the exact `column is of type notification_state but expression is of type
+character varying` failure before backing it out). Per channel, because SMS and email
+succeed and fail independently — a single row-level "exhausted" flag overwrote a
+delivered channel's `SENT` with `FAILED`.
+
+Transitions live in `deliver()`, one place per state: success → `SENT`; failure with
+budget left → `PENDING`; failure with budget gone → `FAILED`. The budget test is
+`getAttempts() + 1 >= MAXIMUM_RETRIES` — **the `+1` is load-bearing**: `attempts` is
+incremented at the *bottom* of the method, so without it the inner test is the exact
+negation of the outer guard and the `FAILED` branch is unreachable dead code.
+
+This is a column **replacement**, not an addition, so it needs a step `routing_key` didn't:
+**dual-write**. `deliver()` writes boolean *and* enum on every change, so old and new code
+can coexist and a rollback still finds accurate booleans. Verified live on both paths
+(`SENT`→`SENT`+timestamp, `FAILED`→`PENDING`+null), **0 mismatches** across all rows.
+
+✅ **Indexes switched to state (V9).** Two new partial indexes on `(created_at)
+WHERE <channel>_state = 'PENDING'`, old boolean-keyed ones dropped. Built with
+`CREATE INDEX CONCURRENTLY` (a plain `CREATE INDEX` takes `SHARE`, which blocks every
+INSERT/UPDATE for the build) — which cannot run inside a transaction, so the migration
+needs a sibling script-config file `V9__….sql.conf` containing `executeInTransaction=false`.
+Verified: index used, 9 pending rows, and a plain `Index Scan` returns them in
+`created_at` order with **no Sort node** (a Bitmap Index Scan loses ordering and still
+sorts — only a straight index scan gets the ordering free).
+
+⚠️ **This one bit hard — two failures worth remembering:**
+1. **Flyway deadlocked against itself.** `CREATE INDEX CONCURRENTLY` waits for all
+   in-flight transactions to finish; Flyway holds *its own* connection open in a
+   transaction to guard the history table. `pg_blocking_pids` showed the migration
+   connection blocked by Flyway's lock connection — it would have waited forever.
+   Fix: `spring.flyway.postgresql.transactional-lock: false` (session-level advisory
+   lock instead of a transactional one).
+2. **Half-applied with no record.** Statement 1 completed; statements 2–4 never ran; no
+   `v9` row was written. A transactional migration would have rolled the whole thing
+   back. Rule: **a migration that cannot roll back must be idempotent** — `IF NOT EXISTS`
+   on every create, `IF EXISTS` on every drop, so a re-run skips what already landed.
+
+✅ **Volume test — the index question, answered.** 500k rows with only 50 `PENDING` (the
+real shape of a queue table: huge history, tiny working set).
+
+| | |
+|---|---|
+| table heap | 163 MB |
+| partial index | **16 kB** — 50 entries in one leaf page |
+| literal query | Index Scan, **0.024 ms** |
+| forced seq scan | **55 ms** (500k rows filtered, then sorted) |
+| bind param, 6th/7th exec | **still Index Scan** |
+| forced generic plan | **119 ms** seq scan |
+| the live job | both indexes used, +6 scans each |
+
+The custom-plan question resolved: Postgres keeps re-planning with the real value because
+the custom plan is ~7,000× cheaper, so `auto` never switches to a generic plan. But the
+forced case proves a generic plan genuinely *cannot* use a partial index — the protection
+is the size of the cost gap, not a guarantee.
+
+**The biggest win is the idle case, not the busy one.** `fixedDelay` fires forever
+regardless of whether there is work (measured: pending=0 and `idx_scan` still climbing).
+That's ~34,560 empty polls/day. At 0.017 ms each, invisible; at 119 ms each, a permanent
+CPU burn on an idle system. The partial index is what makes "find nothing" cheap — and
+that is the real argument for the polling interval.
+
+**Retry maths validated:** 50 rows, 0.3 failure rate, cap 5 → attempts distribution
+21/17/7/3/2 and **exactly one** channel hit the cap, against a predicted 0.24. Five
+retries turn a 30% failure rate into a 0.24% chance of permanent loss.
+
+**Unplanned finding:** the pkey scan counter rose ~+98 for ~100 saves. The job holds
+**detached** entities (no `@Transactional`, `open-in-view: false`), so `save()` issues a
+`merge` = **`SELECT` before `UPDATE`** — double the write cost, invisible in the code.
+Left as-is deliberately: the alternative is holding a DB transaction across provider HTTP
+calls, which is far worse. Worth remembering before the Phase 8 load test.
+
+✅ **Schema finished (V10–V13).** State columns contracted to `NOT NULL` (`NOT VALID` →
+`VALIDATE` → `SET NOT NULL`) — grouped two statements per file this time, because the
+split rule is **by lock strength and scan cost, not statement count**: V10 is catalog-only,
+V11 scans but under a weak lock, V12 skips its scan entirely. Then dual-writing stopped,
+the entity fields removed, and `sms_status`/`email_status` **dropped** along with the three
+now-redundant `..._not_null` CHECKs (scaffolding that existed only to let `SET NOT NULL`
+skip its scan). The two value CHECKs stay — they are the substitute for a native enum.
+
+**Final schema:** `message_id` (PK/dedup), `payload`, `attempts`, `routing_key`,
+`sms_state`, `email_state` all `NOT NULL`; `sms_sent_at` / `email_sent_at` /
+`last_attempt_at` nullable audit columns; two state-keyed partial indexes; nothing else.
+Verified end to end after the drop — transfer → outbox → relay → queue → listener →
+provider → state, with `ddl-auto: validate` passing.
+
+**Decision:** `last_attempt_at` stays **audit-only — no backoff**. Retries fire at a fixed
+interval. Noted as a deliberate choice, not an oversight: exponential backoff (query rows
+whose `last_attempt_at` is older than the backoff for their attempt count) is the obvious
+upgrade if a sustained provider outage ever burns all five attempts inside five minutes.
+
+⏳ **Deferred, all non-blocking:** the listener parses the payload twice and does the
+customer lookup before the `PENDING` guard (a wasted parse + query per duplicate);
+`extractCustomerFromMessage` is bypassed in the new-event branch; the `FAILED` bucket
+cannot distinguish "provider down" from "customer gone" from "payload corrupt" — one more
+`CHECK` swap if that ever matters operationally.
+
+✅ **Retry job DONE** (`ResendingJob`). `@Scheduled`, **two** queries — one per channel,
+each matching one partial index (a single `OR` across both columns could use neither) —
+merged into a `LinkedHashMap` keyed on `message_id`. The merge is not cosmetic: every one
+of the 9 pending rows was pending on *both* channels, so without it `deliver()` would run
+twice per round, doubling provider calls and burning the 5-attempt budget in ~2 rounds
+instead of 5. `LinkedHashMap` (not `HashMap`) so the `OrderByCreatedAtAsc` fairness
+survives the merge.
+
+Per-row try/catch, never around the loop — one bad row must not abort the batch.
+`CustomerNotFoundException` and `JsonProcessingException` are **permanent** (a stored
+payload will never parse; a deleted customer will never return), so both mark the row
+terminal rather than leaving it to spin forever. Third catch on `Exception` so an
+unexpected provider/DB error costs one row, not the batch.
+
+**Verified end to end:** 9 rows went `attempts 1 → 5` over four rounds, flipped to
+`FAILED`, and the pending set emptied — the job now finds nothing. First time `FAILED`
+was ever written by live code rather than a migration, and `attempts` provably stops
+climbing because the row leaves the *query*, not merely changes state.
+
+⚠️ **The indexes were NOT used** — `idx_scan` did not move (the `2` on the SMS index is
+from two forced `EXPLAIN ANALYZE` runs). At 19 rows the planner correctly prefers a seq
+scan. So the index switch is **unproven under load**, and two causes are currently
+indistinguishable: the tiny table (certain) and the parameterised-enum/custom-plan concern
+(`sms_state = ?` needs a custom plan for the planner to prove it implies the partial
+index). Only a volume fixture separates them.
+
+✅ **TRACEABILITY DONE (Bucket D)** — landed ahead of Phase 7 as agreed, because a
+sabotaged flow across three services is unreadable without it.
+
+**MDC is per-thread and per-JVM — there is no shared store.** The id propagates by being
+*copied* at every boundary, and each boundary needs its own mechanism:
+
+| boundary | mechanism | why |
+|---|---|---|
+| inbound HTTP | `CorrelationIdFilter` — **accept if present, generate if absent** | generating unconditionally mints a fresh id per hop and breaks the chain |
+| outbound HTTP | `RestClient` request interceptor (mirror of the filter) | reads MDC → header |
+| `@Async` | `CustomTaskDecorator` | `decorate()` runs on the **caller** (capture), the returned `Runnable` on the **worker** (restore) |
+| `@Scheduled` | generate a **run id** per firing (`relay-`, `eod-`, …) | nothing to inherit; groups one sweep's work |
+| **outbox → relay** | **a database column** (V12 / V14) | the writer thread is dead and its MDC wiped — nothing to copy |
+| AMQP | built-in `correlation_id` property | symmetry with `message_id`, visible in the management UI |
+
+**Two ids, two jobs.** A batch job's own MDC describes *the run*; each item carries *its
+own* stored id. Publishing the run id onto messages would merge a hundred unrelated
+customers into one apparent trace — worse than no id, because it looks correct.
+
+**Fail open for diagnostics.** Both correlation columns are permanently nullable: the
+outbox write is inside the money-move transaction, so `NOT NULL` would roll back a
+transfer over a missing debugging field. The same rule forced a **length cap in the
+filters** — an oversized inbound header would overflow `varchar(70)` and roll back the
+transfer, defeating the rule through the back door. Generate rather than truncate: a
+truncated id looks real and matches nothing upstream.
+
+**A correlation id is a key with nothing to unlock unless something logs.** The plumbing
+was complete and *invisible* — a grep returned one unrelated warning, because 15 of the
+wallet's 16 logger calls were in `GlobalExceptionHandler`. Three `INFO` lines at the
+boundaries (ledger written / event published / message received) turned it into a real
+trace: **one transfer → five lines across two JVMs, four threads and a broker, from a
+single grep.**
+
+File logging added to all three services under `logs/` (gitignored, appends across
+restarts, rolls at 10 MB).
+
+⏳ **Deferred:** `deliver()` still logs nothing, so the trace stops at "message received" —
+the SMS send and the `SENT` transition are invisible. The MDC key is a string literal in
+~6 places; a typo fails **silently**. Notification's provider `RestClient` has no
+interceptor, so the outbound provider call is untraced.
+
+### ▶ IN PROGRESS — ledger transaction types (decided, not yet built)
+
+**The gap:** `ledger` records `entry_id, debited, credited, amounts, idempotency_key,
+created_at, reverses_entry_id` — and **no business meaning**. Every row is "a transfer".
+This blocks statements, analytics and the deferred AI feature, so it is a **prerequisite
+for history #4**, not a refinement.
+
+**Rejected — deriving the type from account numbers at runtime.** It is *possible* today
+(`001`=topup, `002`=outward, `003`=suspense, `004`=bill) but: it leaks wallet internals
+across a service boundary (history #4 via CDC would hardcode "account 004 = bill"), it
+cannot distinguish flows that share a shape, it discards intent that was known at write
+time, and every consumer re-implements the same mapping and drifts.
+
+**DECIDED — money-movement kinds, not products.** The wallet never learns what a "bill" is:
+
+| kind | movement | flow |
+|---|---|---|
+| `DEPOSIT` | outside → customer | top-up (`001 → customer`) |
+| `WITHDRAWAL` | customer → outside | withdraw (`customer → 002`) |
+| `TRANSFER` | customer → customer | P2P |
+| `HOLD` | customer → suspense | bill reserve |
+| `SETTLEMENT` | suspense → beneficiary | bill capture |
+| `RELEASE` | suspense → customer | bill reversal |
+
+Immediate payoff: `SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = money currently held.
+On today's data that is **4**, while the bill service reports **5** bills `Reserved` —
+a discrepancy worth chasing once the column exists, and a question the ledger could not
+even be asked before.
+
+**DECIDED — `varchar` + `CHECK`, not an int code.** An int makes the database unreadable
+(`3` means nothing), forces every consumer — including CDC — to carry the mapping, and if
+it is an enum ordinal, reordering silently rewrites history. The "freedom to rename"
+argument conflates two things: the **identifier** (`BILL_PAYMENT`, ~never changes) and the
+**display label** ("Bill Payment" / "دفع فاتورة", changes often and per language). The
+label is a presentation mapping in #4 regardless; the int buys nothing and costs legibility.
+
+**DECIDED — type assigned server-side from dedicated endpoints**, not a caller-supplied
+field. Unforgeable, and it gives each operation its own preconditions (a `HOLD` can fail on
+insufficient balance and is customer-facing; a `SETTLEMENT` should never fail on balance,
+so a failure there is an ops alarm). Add `/v1/transfer/hold` and `/v1/transfer/settle` to
+`LedgerEntryController` — **generic names, not a `BillController`**, which would put bill
+vocabulary back into the wallet and undo the decision above. `/revers` needs no sibling:
+reversing a `HOLD` *is* a `RELEASE`, so the type derives from the target entry.
+
+**DECIDED — no `purpose` column and no `counterparty_ref`.** Both are the read model's job.
+History #4 consumes wallet *and* bill events and joins them on the correlation id, so
+`HOLD` + a bill event carrying the biller = a bill payment, with product meaning owned by
+the service that knows it. Copying the biller code into the ledger would create two sources
+of truth for one fact.
+
+⚠️ **Known residual risks, accepted:**
+- `HOLD` currently means "bill" only because the bill service is the sole caller. Add
+  merchant payments later and it becomes ambiguous, with no way to re-derive history.
+- **Nobody records the destination bank** for a withdrawal — one generic `Outward Transfer`
+  account for all outbound money. Fix is per-bank internal accounts (the credited account
+  identifies the bank), not a new column. Parked deliberately.
+
+**Build order:** `V13` nullable `varchar(20)` + `CHECK` → endpoints assign it →
+backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
+`UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
+lesson) → contract to `NOT NULL`.
+
+◀ **NEXT — pick the next thread:**
+1. **Bill service publishes `BillPaid` / `BillRejected`** — notifications currently only
+   ever sees wallet events. Note the open policy question: a bill reserve already emits a
+   wallet event, so a bill payment would produce a wallet notification *and* a bill one;
+   suppression is a notifications-side call. Its outbox will need a correlation column too.
+2. **History service #4** — the last of the four; CDC/Debezium was raised as a
+   learning interest.
+3. **Phase 7 sabotage** — the *traceability gate* is now cleared, but the **build is not
+   finished**: the bill service still publishes nothing, and history #4 does not exist.
+   Sabotaging an incomplete system means repeating the pass once those land. **Finish 1
+   and 2 first**, then sabotage the whole thing once.
+
+**Still missing to be feature-complete (4 services, req 5):**
+- bill → notification: no `BillPaid` / `BillRejected` events yet, so notifications only
+  ever sees wallet events. Needs its own outbox + a correlation column (V12's shape).
+- history #4: not started. Read model over wallet + bill; CDC/Debezium raised as the
+  learning angle. Will need the correlation id carried through whatever CDC path is used —
+  worth checking early, since Debezium reads the WAL and sees only columns, which is
+  another argument for the id living *in the row* rather than in memory.
+
+Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
+indexes — merged by `message_id` so a row needing both channels is not processed twice and
+`attempts` is not double-incremented. Calls `NotificationService.deliver(...)` as its
+**third caller** (new-event path and this job share it).
+
+**Predict first:** with `maximum-retries = 5` and the simulator at a 0.3 failure rate,
+how many rows still have `sms_status = false` after the job has run enough times to
+exhaust retries — and what should happen to a row that hits the cap?
+
+⚠️ **Cleanups riding along** (do not let these rot): `ProcessedEvent`'s 10-arg positional
+constructor is a hazard — adjacent `boolean` / `LocalDateTime` params are silently
+interchangeable. The listener's else-branch duplicates the customer lookup instead of
+calling `extractCustomerFromMessage`, and carries dead fields (`notificationProviderClient`,
+`MAXIMUM_RETRIES`) plus unused locals.
+
+**Also still open:** the bill service does not publish `BillPaid`/`BillRejected` yet, so
+notifications only sees wallet events. And a bill reserve emits a wallet event too, so a
+bill payment will produce a wallet notification *and* (later) a bill one — suppression is
+a notifications-side policy call.
 
 *(Open decisions #1 and #2 were both resolved 2026-08-01 — see §5 and ADR-0005.)*
 
@@ -502,6 +852,34 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 - Two beans of the same type (two `RestClient`s) need name-matched injection or `@Qualifier`.
 - A read timeout must be configured, or a hung HTTP call blocks forever and the timeout exception never fires.
 - Shared Testcontainers DB + no rollback ⇒ every test needs unique idempotency keys and CIFs.
+- **Flyway runs each migration file in ONE transaction** (Postgres has transactional DDL). Locks release only at commit — so bundling `ADD CONSTRAINT … NOT VALID` + `VALIDATE` in one file holds `ACCESS EXCLUSIVE` across the whole scan and destroys the lock-avoidance the split was for. **One statement per file**, at the cost of atomicity (a crash mid-sequence leaves a safe-but-incomplete state).
+- `NOT VALID` means "existing rows unchecked", **not** "not enforced" — new rows are rejected immediately. That asymmetry is what makes the gap between the two migrations safe.
+- `SET NOT NULL` skips its verification scan iff a **validated** `CHECK (col IS NOT NULL)` already proves the property (PG 12+). Alone, it full-scans under `ACCESS EXCLUSIVE`.
+- DDL waits for its lock **at the head of the queue** — every query arriving behind it also waits. One idle-in-transaction session + a migration = a fully stalled table. Set `lock_timeout` before DDL in production.
+- **A column DEFAULT only fires when the column is omitted from the INSERT.** Hibernate includes every insertable mapped column, so it sends an explicit `NULL` and the default never applies — the only way to let it fire is `insertable = false` (which is why `created_at` has it). An unset `@Builder` field is still `NULL`, not absent.
+- `@Builder` trades a compile-time completeness check for readability: forget a field and it compiles, then fails at insert against `NOT NULL`. A positional constructor would have refused to compile. Worth it on a wide entity; not free.
+- Split migrations **by lock strength and scan cost, not statement count**. Grouping is safe when a file contains only catalog-only ops, or only weak-lock scans — the V4/V5 split was needed because a *strong* lock was taken in statement 1 and held across a *scan* in statement 2.
+- **Idempotency is required only where rollback is impossible.** `IF EXISTS`/`IF NOT EXISTS` are mandatory in a non-transactional migration and merely optional in a transactional one, where a failure rolls back and the retry starts clean.
+- `@Deprecated` on a field changes nothing at runtime — Hibernate still maps and writes it. A deprecation window is for public APIs with consumers you don't control, not private fields with zero readers.
+- **Never hold a DB transaction across a network call you don't control.** `@Transactional` on a batch job that makes HTTP calls sets the transaction's duration by someone else's timeout, and a rollback undoes state for rows whose messages were already sent — turning a retry into a duplicate generator.
+- A redundant guard can be worse than useless: `attempts < MAX` alongside a state check is redundant *today*, but **lowering** the config strands rows as `PENDING` forever (skipped by the guard, never marked `FAILED`, `attempts` climbing) — resurrecting the original bug via a config tweak. Let state alone decide.
+- **MDC is a `ThreadLocal` per JVM — nothing is shared.** Every thread boundary needs its own copy mechanism, and a boundary separated by *time* (outbox → relay) can only be crossed by persisting the value.
+- `@Header(..., required = false)` on a listener is mandatory for optional metadata — Spring's default throws *before* the method body, outside the catch blocks, producing the requeue hot loop those catches exist to prevent.
+- Null-guard polarity: `x != null && x.f()` when asking "is it usable?", `x == null || x.f()` when asking "is it unusable?". The null check must be the operand that short-circuits the other away — `!= null || ...` evaluates the right side precisely when the reference is null.
+- **Observability must never block a business transaction.** Diagnostic columns stay nullable, and any value accepted from outside must be length-capped at the edge or it becomes a rollback vector.
+- In a batch job, the job's MDC describes *the run*; each item carries *its own* id. Conflating them merges unrelated flows into one trace that looks correct.
+- MDC exists so you **don't** thread the value through method signatures — a parameter gives it to one method, MDC gives it to every method on the thread.
+- `@Transactional` on a batch job that makes network calls is a bug: it sets the transaction's duration by someone else's timeout, and a rollback undoes state for work already delivered.
+- `CREATE INDEX CONCURRENTLY` + Flyway **deadlocks by default**: the build waits for all open transactions, and Flyway holds one for its history lock. Needs `spring.flyway.postgresql.transactional-lock: false`. Diagnose with `pg_blocking_pids()` — a hang shows no error and no history row, so it looks like nothing happened.
+- **A migration that cannot roll back must be idempotent.** With `executeInTransaction=false` a mid-file failure leaves earlier statements permanently applied and unrecorded, so every statement needs `IF EXISTS` / `IF NOT EXISTS` to survive the retry.
+- Keyword order is `CREATE INDEX CONCURRENTLY IF NOT EXISTS` — `CONCURRENTLY` first.
+- The `.sql.conf` script-config file must reach `target/classes` too; without it Flyway silently wraps the file in a transaction again.
+- A **Bitmap** Index Scan does *not* preserve index order, so `ORDER BY` still costs a Sort. Only a plain `Index Scan` gets the ordering for free.
+- A `boolean` cannot hold a **terminal-failure** state. "Pending" and "gave up" both read `false`, so a partial index on it can never shed dead rows. Queue-shaped tables need three states, not two.
+- Index predicates must be **immutable literals** — they cannot read config. Baking `attempts < 5` into an index couples schema to `application.yml`, and the failure is asymmetric: *lowering* the config keeps the index usable, *raising* it silently makes it unusable (the query no longer implies the predicate) and you drop to a seq scan with no error. **Index the row's state, not the policy.**
+- Replacing a column (vs adding one) needs a **dual-write** phase — both columns written on every change — so old and new code coexist and rollback stays safe. Flip *writes* first, *reads* a deploy later, drop the old column a deploy after that.
+- A dedup ledger row's lifetime is governed by **how long redelivery is possible**, not by whether the work finished. Deleting/archiving a *delivered* row re-opens duplicate sends (the relay's publish-then-mark gap will replay the same `message_id`). Retention must be age-based, never status-based.
+- A status flag and its timestamp must be written **together or not at all** — setting the timestamp unconditionally produces states that contradict themselves and cannot be reasoned about later.
 
 ---
 
@@ -509,7 +887,14 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-08-15 | **Traceability complete (Bucket D)** — correlation ids now span inbound/outbound HTTP, `@Async`, `@Scheduled`, the outbox (V12/V14) and AMQP, across all three services. Landed ahead of Phase 7 as planned. Key lessons: MDC is per-thread so every boundary needs its own copy mechanism and a *time* gap can only be crossed by persistence; run-id vs item-id must never be conflated; diagnostics fail open (nullable columns + a length cap at the edge, or a header rolls back a transfer); and the plumbing is worthless without log lines — a grep returned one unrelated warning until three boundary `INFO`s were added. Verified: one transfer → five lines, two JVMs, four threads, one broker, one grep. NEXT ACTION → bill events, history #4, or Phase 7. |
+| 2026-08-11 | **Service #3 complete.** Retry job (`ResendingJob`) built and verified. **Volume test settled the open index question**: at 500k rows / 50 pending, the partial index is 16 kB and serves the live job's bind-parameter query (0.024 ms vs 55 ms seq scan); a *forced* generic plan does fall back to a 119 ms seq scan, so the protection is the cost gap, not a guarantee. Key insight: the index's biggest win is the **idle** poll, not the busy one — `fixedDelay` runs forever whether or not there is work. Retry maths validated (0.3 failure rate × 5 attempts → predicted 0.24 permanent failures, observed exactly 1). Then **V10–V13 finished the schema**: state columns `NOT NULL`, dual-writing stopped, entity fields removed, booleans and three scaffolding CHECKs dropped. Verified end to end after the drop. Decision: `last_attempt_at` stays audit-only, **no backoff**. NEXT ACTION → pick between bill-service events, correlation IDs, or history #4. |
+| 2026-08-10 | **Terminal state added** (V7 `varchar`+`CHECK`, V8 three-branch `CASE` backfill, dual-write in `deliver()`). Root cause named: a boolean cannot distinguish *pending* from *gave up*, so the partial index could never shed dead rows and `attempts` incremented forever. Rejected along the way: a native PG enum (breaks Hibernate varchar binding — reproduced), `attempts` in the index predicate (couples schema to config, fails asymmetrically and silently), and archiving delivered rows (re-opens duplicate sends — the dedup ledger's lifetime is a *time* question, not a status one). Contract steps V9–V11 + index switch still owed. |
+| 2026-08-09 | **Notification chain verified end to end**, and `routing_key` added to `processed_events` via the full **expand-contract** dance (V2 nullable → code populates → V3 idempotent backfill to `'unknown'` → V4 `NOT VALID` / V5 `VALIDATE` / V6 `SET NOT NULL`, one statement per file so Flyway's per-file transaction cannot hold `ACCESS EXCLUSIVE` across the scan). Two bugs found by reading data rather than code: `sms_sent_at` left null on success, then set unconditionally producing contradictory rows. NEXT ACTION → the **retry job**. |
 | 2026-07-30 | Plan created. Bill-payment phase complete and re-verified; merge to `main` pending. |
+| 2026-08-06 | **Notification service #3 built** (`b4a0c4c`): schema, entities, queue+binding, provider client and the consumer — dedup on AMQP message_id, status read from the provider's answer, never throws. Plus a **provider simulator** on 9092 with a 0.3 failure rate so the retry design has something real to react to. Not yet run end to end; **no retry job yet**, so failed sends currently sit unretried. |
+| 2026-08-04 | **Relay job done** (`c6c8af6`): publishes outbox rows to the `quickpay.events` topic exchange with dotted routing keys and the outbox id as AMQP `message_id`; marks `sent_at` after a successful publish. Exchange renamed from the misleading `notification-queue`. Verified on the broker. |
+| 2026-08-03 | **Outbox write done** (`5ffe478`, branch `feat/notifications`): RabbitMQ scaffolded, transactional outbox decided and built (V11 + entity + write inside `transfer`'s transaction), partial index chosen from measurements. Atomicity verified. Relay job next. |
 | 2026-08-01 | `test/bill-service` merged to `main` via PR #4; full suite green on main (wallet 8/8, bill 7/7). |
 | 2026-08-01 | **RabbitMQ decision RESOLVED** (ADR-0005, docs branch): broker for event fan-out; bill's `@Async` biller trigger stays (point-to-point to an external system ≠ fan-out). Sponsor decisions log opened with its first three entries. ⚠️ ADR-0005 leaves **reliable publishing** open — outbox pattern, now Step 0 of the notifications build. NEXT ACTION → notifications (#3). |
 | 2026-08-01 | **Service decomposition DECIDED** (§5 #2): notifications = #3 (req 5 is itself a decomposition instruction), history = #4 as a read model (a statement needs bill context, so it is a join across two owners; also keeps heavy reads off the money core). **Budget now full.** **AI feature raised and DEFERRED** as a candidate (§5 #5) — not in the brief, blocked behind history existing, read-side so it belongs inside #4 and never in the money path. |

@@ -1,19 +1,28 @@
 package com.quickpay.wallet.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quickpay.wallet.domain.LedgerEntry;
+import com.quickpay.wallet.domain.NotificationEvent;
 import com.quickpay.wallet.domain.Wallet;
+import com.quickpay.wallet.dto.event.MoneyMovedPayload;
 import com.quickpay.wallet.enums.WalletStatus;
 import com.quickpay.wallet.exception.*;
 import com.quickpay.wallet.repository.LedgerEntryRepository;
+import com.quickpay.wallet.repository.NotificationEventRepository;
 import com.quickpay.wallet.repository.WalletRepository;
 
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
 
 
 @Service
@@ -22,6 +31,8 @@ public class WalletService {
 
     private final WalletRepository walletRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final NotificationEventRepository notificationEventRepository;
+    private final ObjectMapper objectMapper;
     private final String INTERNAL_TRANSACTION_ACCOUNT = "000000000001";
     private final String INTERNAL_OUTWARD_ACCOUNT = "000000000002";
     private static final Logger logger = LoggerFactory.getLogger(WalletService.class);
@@ -75,6 +86,14 @@ public class WalletService {
         // post ledger entry
         LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id);
         ledgerEntryRepository.save(entry);
+
+        if(!debitedWallet.isInternal()){
+            notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+        }
+        if (!creditedWallet.isInternal()){
+            notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+        }
+        logger.info("ledger with entry id {} saved",entry.getEntryId());
         return entry;
     }
 
@@ -148,5 +167,17 @@ public class WalletService {
     }
     private String compareWallets(String a, String b){
         return a.compareTo(b) > 0 ? a : b;
+    }
+
+    private NotificationEvent notificationEventHelper(String eventType,String cif, String walletNumber,String counterParty ,String entryId, Long amount) throws ParsingNotificationEventException {
+        MoneyMovedPayload eventPayload = new MoneyMovedPayload(entryId,cif,walletNumber,counterParty,amount,LocalDateTime.now());
+        String payload = null;
+        try {
+            payload = objectMapper.writeValueAsString(eventPayload);
+        } catch (JsonProcessingException e) {
+            throw new ParsingNotificationEventException(entryId);
+        }
+        NotificationEvent event = new NotificationEvent(payload,null,eventType,UUID.randomUUID(), MDC.get("correlationId"));
+        return event;
     }
 }

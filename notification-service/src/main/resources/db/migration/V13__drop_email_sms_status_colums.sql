@@ -1,0 +1,7 @@
+ALTER TABLE processed_events
+DROP COLUMN sms_status,
+DROP COLUMN email_status,
+DROP CONSTRAINT ck_processed_events_sms_state_not_null,
+DROP CONSTRAINT ck_processed_events_email_state_not_null,
+DROP CONSTRAINT ck_processed_events_routing_key_not_null;
+

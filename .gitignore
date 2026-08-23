@@ -12,3 +12,5 @@ target/
 
 # Logs
 *.log
+# rotated files are named e.g. wallet-service.log.2026-08-13.0.gz, so *.log misses them
+logs/

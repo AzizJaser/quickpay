@@ -1,0 +1,1 @@
+ALTER TABLE processed_events ADD COLUMN correlation_id varchar(70);

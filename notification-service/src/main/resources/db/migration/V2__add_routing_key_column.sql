@@ -1,0 +1,1 @@
+ALTER TABLE processed_events ADD COLUMN routing_key varchar(50) ;

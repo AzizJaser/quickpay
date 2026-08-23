@@ -1,0 +1,1 @@
+ALTER TABLE outbox_notification ADD COLUMN correlation_id varchar(70);
