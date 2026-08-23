@@ -330,7 +330,36 @@ of truth for one fact.
   account for all outbound money. Fix is per-bank internal accounts (the credited account
   identifies the bank), not a new column. Parked deliberately.
 
-**Build order:** `V13` nullable `varchar(20)` + `CHECK` → endpoints assign it →
+**LATE ADDITION — `settles_entry_id` + a discharge invariant.** Found while checking
+whether settlements were traceable: `RELEASE` rows link back via `reverses_entry_id`, but
+**`SETTLEMENT` rows link to nothing** — `WalletClient.capture(amount, idempotencyKey)`
+never passes the hold's entry id, even though `BillService.resolve` is holding
+`bill.getEntryId()` right there. So the wallet's own ledger cannot say which hold a
+settlement discharged; the relationship exists only in the bill service.
+
+Fix mirrors the existing pattern: `settles_entry_id` alongside `reverses_entry_id`. But a
+plain `UNIQUE` on each leaves a hole that matters more — **nothing stops a hold being both
+settled *and* released**, two rows each satisfying its own constraint, paying the biller
+*and* refunding the customer from one hold. **Money created.** Closed with a single
+expression index instead:
+
+```
+CREATE UNIQUE INDEX ... ON ledger (coalesce(reverses_entry_id, settles_entry_id));
+```
+
+Both discharge paths now compete for one slot; the second fails at the database. Ordinary
+transfers have both columns null and `coalesce` yields null, which never conflicts in a
+unique index. **Proven**: attempting to settle an already-released hold returns
+`duplicate key value violates unique constraint`. The golden rule is now structural rather
+than something the EOD sweep and idempotency keys must be careful about. This subsumes
+`V9`'s `reverses_entry_id_unique` (redundant, harmless to keep).
+
+*(Considered and dropped: adding `correlation_id` to `ledger`. `settles_entry_id` is
+stronger for this problem — a ledger-internal relationship rather than a debugging
+breadcrumb — and it carries the uniqueness invariant a correlation id cannot.)*
+
+**Build order:** ✅ `V13` nullable `varchar(20)` + `CHECK` **+ `settles_entry_id` + the
+discharge index** (written and dry-run verified; apply on next boot) → endpoints assign it →
 backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
 `UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
 lesson) → contract to `NOT NULL`.
