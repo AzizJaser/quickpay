@@ -5,6 +5,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -116,7 +120,51 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(ParsingNotificationEventException.class)
-    public void handlerParsingNotificationEventException(ParsingNotificationEventException e){
+    public ProblemDetail handlerParsingNotificationEventException(ParsingNotificationEventException e){
         logger.error("Can not serialise a notification event for entry ID: {}",e.getEntryId());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+        problem.setTitle("Error whole serialise a notification event");
+        return problem;
+    }
+
+    @ExceptionHandler(UnHoldTransaction.class)
+    public ProblemDetail handlerUnHoldTransactionException(UnHoldTransaction e){
+        logger.warn("trying to settle an non-hold transaction for entry ID: {}",e.getEntryId());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("entry can not be settled");
+        return problem;
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ProblemDetail handlerMethodArgumentNotValidException(MethodArgumentNotValidException e){
+        logger.warn(e.getMessage());
+        String detail ="";
+        for(FieldError fieldError : e.getBindingResult().getFieldErrors()){
+            detail = detail + fieldError.getField() + ":"+ fieldError.getDefaultMessage() + "\n";
+        }
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, detail);
+        problem.setTitle("Argument is not valid");
+        return problem;
+    }
+
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ProblemDetail handlerMissingRequestHeaderException(MissingRequestHeaderException e){
+        logger.warn(e.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Missing a mandatory request header");
+        return problem;
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail handlerHttpMessageNotReadableException(HttpMessageNotReadableException e){
+        logger.warn(e.getMessage());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Malformed JSON object");
+        return problem;
     }
 }

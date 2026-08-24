@@ -340,6 +340,30 @@ History #4 consumes wallet *and* bill events and joins them on the correlation i
 the service that knows it. Copying the biller code into the ledger would create two sources
 of truth for one fact.
 
+✅ **Wallet endpoints done and verified end to end.** `/hold` and `/settle` added to
+`LedgerEntryController`; every endpoint assigns its own type server-side except `/revers`,
+which derives it from the entry being reversed. `/settle` takes **only** the hold's
+`entryId` — the wallet supplies the beneficiary account *and reads the amount from the
+hold*, so settling a different amount than was held is impossible by construction rather
+than merely forbidden.
+
+Verified against a live wallet: `HOLD` → `SETTLEMENT` (with `settles_entry_id`), a second
+settle of the same hold → **409** from `uq_entry_discharged_once`, settling a non-hold →
+**400**, and `/revers` on a hold → `RELEASE` with `reverses_entry_id`. Both discharge paths
+land in the correct column, so the held-money query stays meaningful.
+
+⚠️ **Bug found while testing, now fixed:** the catch-all `@ExceptionHandler(Exception.class)`
+was swallowing Spring's own well-classified exceptions and returning **500** for every
+client mistake — a blank field, a missing `Idempotency-Key`, malformed JSON. Callers could
+not distinguish "your request was bad" from "the wallet is broken", which is exactly the
+distinction the bill service branches on. Added explicit handlers for
+`MethodArgumentNotValidException`, `MissingRequestHeaderException` and
+`HttpMessageNotReadableException`, all returning **400**. Two related lessons: an
+`@ExceptionHandler` returning **`void` yields 200 OK**, silently converting a rejected
+operation into a reported success; and a client-facing `detail` must be built from
+`getBindingResult().getFieldErrors()`, never from `getMessage()`/`getParameter()`, which
+dump controller signatures, DTO class names and Spring's internal message codes to the caller.
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
@@ -375,8 +399,9 @@ than something the EOD sweep and idempotency keys must be careful about. This su
 stronger for this problem — a ledger-internal relationship rather than a debugging
 breadcrumb — and it carries the uniqueness invariant a correlation id cannot.)*
 
-**Build order:** ✅ `V13` nullable `varchar(20)` + `CHECK` **+ `settles_entry_id` + the
-discharge index** (written and dry-run verified; apply on next boot) → endpoints assign it →
+**Build order:** ✅ `V13` (`transaction_type` + `settles_entry_id` + `uq_entry_discharged_once`)
+✅ `V14` (`ck_one_discharge_kind`) ✅ `V15` (seven-value vocabulary) ✅ **wallet Java side done**
+→ ⏳ bill service switches to the new endpoints → ⏳ backfill by derivation →
 backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
 `UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
 lesson) → contract to `NOT NULL`.

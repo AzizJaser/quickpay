@@ -6,5 +6,6 @@ public enum TransactionType {
     HOLD,
     SETTLEMENT,
     RELEASE,
-    WITHDRAWAL
+    WITHDRAWAL,
+    REVERSAL
 }
