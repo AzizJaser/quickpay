@@ -1,9 +1,7 @@
 package com.quickpay.wallet.domain;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import com.quickpay.wallet.enums.TransactionType;
+import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -33,6 +31,11 @@ public class LedgerEntry {
     private String idempotencyKey;
 
     private String reversesEntryId;
+
+    private String settlesEntryId;
+
+    @Enumerated(EnumType.STRING)
+    private TransactionType transactionType;
 
     @Column(insertable = false, updatable = false)
     private LocalDateTime created_at;

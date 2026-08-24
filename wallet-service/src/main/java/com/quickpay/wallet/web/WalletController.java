@@ -18,7 +18,7 @@ public class WalletController {
 
     private final WalletService walletService;
 
-    @GetMapping("/{wallet_number}")
+    @GetMapping("/{walletNumber}")
     public ResponseEntity<WalletResponse> getWallet(@PathVariable String wallet_number){
         Wallet wallet = walletService.fetchWallet(wallet_number);
 
@@ -31,19 +31,19 @@ public class WalletController {
         return ResponseEntity.status(HttpStatus.CREATED).body(fromWallet(wallet));
     }
 
-    @PutMapping("/activate/{wallet_number}")
+    @PutMapping("/activate/{walletNumber}")
     public ResponseEntity<WalletResponse> activateWallet(@PathVariable String wallet_number){
         Wallet wallet = walletService.activateWallet(wallet_number);
         return ResponseEntity.status(HttpStatus.OK).body(fromWallet(wallet));
     }
 
-    @PutMapping("/suspend/{wallet_number}")
+    @PutMapping("/suspend/{walletNumber}")
     public ResponseEntity<WalletResponse> suspendWallet(@PathVariable String wallet_number){
         Wallet wallet = walletService.suspendWallet(wallet_number);
         return ResponseEntity.status(HttpStatus.OK).body(fromWallet(wallet));
     }
 
-    @DeleteMapping("/close/{wallet_number}")
+    @DeleteMapping("/close/{walletNumber}")
     public ResponseEntity<WalletResponse> closeWallet(@PathVariable String wallet_number){
         Wallet wallet = walletService.closeWallet(wallet_number);
         return ResponseEntity.ok(fromWallet(wallet));

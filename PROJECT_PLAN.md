@@ -286,16 +286,33 @@ across a service boundary (history #4 via CDC would hardcode "account 004 = bill
 cannot distinguish flows that share a shape, it discards intent that was known at write
 time, and every consumer re-implements the same mapping and drifts.
 
-**DECIDED — money-movement kinds, not products.** The wallet never learns what a "bill" is:
+**DECIDED — money-movement kinds, not products.** The wallet never learns what a "bill" is.
 
-| kind | movement | flow |
-|---|---|---|
-| `DEPOSIT` | outside → customer | top-up (`001 → customer`) |
-| `WITHDRAWAL` | customer → outside | withdraw (`customer → 002`) |
-| `TRANSFER` | customer → customer | P2P |
-| `HOLD` | customer → suspense | bill reserve |
-| `SETTLEMENT` | suspense → beneficiary | bill capture |
-| `RELEASE` | suspense → customer | bill reversal |
+### The seven transaction types
+
+| type | movement | written when | endpoint |
+|---|---|---|---|
+| `DEPOSIT` | `001` → customer | money enters the platform (gateway confirms a top-up) | `/top-up` |
+| `WITHDRAWAL` | customer → `002` | money leaves the platform toward another bank | `/withdraw` |
+| `TRANSFER` | customer → customer | a completed P2P inside the platform | `/betweenWallets` |
+| `HOLD` | customer → `003` | funds earmarked, outcome not yet known | `/hold` |
+| `SETTLEMENT` | `003` → `004` | the beneficiary confirmed — the hold is discharged **outward** | `/settle` |
+| `RELEASE` | `003` → customer | the beneficiary declined — the hold is discharged **back** | `/revers` on a `HOLD` |
+| `REVERSAL` | opposite of the original | an undo of anything that was **not** a hold | `/revers` on anything else |
+
+**Why each exists — the distinctions that are load-bearing:**
+
+- **`HOLD` vs `TRANSFER`.** A hold models *uncertainty over time*: the customer has committed but the outcome is unknown, so the money belongs to neither party and something must later resolve it. A transfer has no such gap — it is settled the instant the row commits. **Do not route P2P through suspense**: it would split one row into two, lose the per-row conservation guarantee (`debited + credited = 0`), and invent a stranded-funds failure mode that cannot exist today.
+- **`SETTLEMENT` vs `RELEASE`.** The two ways a hold ends — outward to the beneficiary, or back to the customer. Both consume the hold; they differ only in destination. Keeping them distinct is what makes
+  `SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = **money currently in suspense**, answerable from the wallet alone, without asking the bill service.
+- **`RELEASE` vs `REVERSAL`.** `RELEASE` is deliberately narrow: *only* money leaving suspense. Broadening it to mean "any undo" would pull reversed transfers and reversed deposits — which never touched suspense — into the held-money query and silently corrupt it. `REVERSAL` therefore covers every other undo, with `reverses_entry_id` saying *what* was undone. Rejected alternatives: one `REVERSE_DEPOSIT`-style value per reversible kind (doubles the vocabulary, most values never occur), and typing a reversal as its original kind (then `count(TRANSFER)` silently counts undos unless every query remembers `WHERE reverses_entry_id IS NULL`).
+- **`SETTLEMENT` is a liability movement, not an outbound payment.** `004` is "money we owe billers", not the biller's bank. Real payout would be a separate netting run — out of scope, but the model is already shaped correctly for it.
+
+**Assignment rule:** every endpoint hardcodes its own type server-side — unforgeable, and the
+controller never handles a `TransactionType`. `/revers` is the sole exception: it **derives**
+the type from the entry being reversed (`HOLD → RELEASE`, else `REVERSAL`), so it must load
+the original first.
+
 
 Immediate payoff: `SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = money currently held.
 On today's data that is **4**, while the bill service reports **5** bills `Reserved` —

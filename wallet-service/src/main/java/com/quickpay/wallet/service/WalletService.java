@@ -33,8 +33,9 @@ public class WalletService {
     private final LedgerEntryRepository ledgerEntryRepository;
     private final NotificationEventRepository notificationEventRepository;
     private final ObjectMapper objectMapper;
-    private final String INTERNAL_TRANSACTION_ACCOUNT = "000000000001";
-    private final String INTERNAL_OUTWARD_ACCOUNT = "000000000002";
+    private final static String INTERNAL_TRANSACTION_ACCOUNT = "000000000001";
+    private final static String INTERNAL_OUTWARD_ACCOUNT = "000000000002";
+    private final static String SUSPENSE_ACCOUNT = "000000000003";
     private static final Logger logger = LoggerFactory.getLogger(WalletService.class);
 
     @Value("${wallet.max-per-cif:5}")
@@ -110,6 +111,17 @@ public class WalletService {
         LedgerEntry entry = ledgerEntryRepository.findByEntryId(original_entry_id)
                 .orElseThrow(()-> new EntryNotFoundException(original_entry_id));
         return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id);
+    }
+    @Transactional
+    public LedgerEntry hold(String wallet_number,Long amount,String idempotencyKey){
+        return transfer(wallet_number,SUSPENSE_ACCOUNT,amount,idempotencyKey,null);
+    }
+
+    @Transactional
+    public LedgerEntry settle(String entryId){
+        LedgerEntry entry = ledgerEntryRepository.findByEntryId(entryId)
+                .orElseThrow(()-> new EntryNotFoundException(entryId));
+
     }
 
     public Wallet createWallet(String cif,String wallet_name){
