@@ -1,5 +1,6 @@
 package com.quickpay.wallet.exception;
 
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -14,9 +15,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 
 @RestControllerAdvice
+@RequiredArgsConstructor
 public class GlobalExceptionHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
 
     @ExceptionHandler(WalletNotFoundException.class)
     public ProblemDetail handlerWalletNotFoundException(WalletNotFoundException e){
@@ -128,8 +131,8 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
-    @ExceptionHandler(UnHoldTransaction.class)
-    public ProblemDetail handlerUnHoldTransactionException(UnHoldTransaction e){
+    @ExceptionHandler(UnHoldTransactionException.class)
+    public ProblemDetail handlerUnHoldTransactionException(UnHoldTransactionException e){
         logger.warn("trying to settle an non-hold transaction for entry ID: {}",e.getEntryId());
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.BAD_REQUEST, e.getMessage());
@@ -165,6 +168,19 @@ public class GlobalExceptionHandler {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.BAD_REQUEST, e.getMessage());
         problem.setTitle("Malformed JSON object");
+        return problem;
+    }
+
+    @ExceptionHandler(HoldAlreadyDischargedException.class)
+    public ProblemDetail handlerHoldAlreadyDischargedException(HoldAlreadyDischargedException e){
+        logger.warn("hold {} was already discharged by id of {} and type is {}",e.getHoldEntryId(),e.getDischargedByEntryId(),e.getDischargerType());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, e.getMessage());
+        problem.setTitle("hold already discharged");
+        problem.setDetail(e.getMessage());
+        problem.setProperty("holdEntryId",e.getHoldEntryId());
+        problem.setProperty("dischargedByEntryId", e.getDischargedByEntryId());
+        problem.setProperty("dischargeType", e.getDischargerType());
         return problem;
     }
 }

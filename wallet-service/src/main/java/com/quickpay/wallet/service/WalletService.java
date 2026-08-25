@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.UUID;
 
 
@@ -126,10 +127,16 @@ public class WalletService {
                 .orElseThrow(()-> new EntryNotFoundException(entryId));
 
         if(entry.getTransactionType() == TransactionType.HOLD){
+
+            Optional<LedgerEntry> discharged = ledgerEntryRepository.findEntryByHoldId(entryId);
+            if(discharged.isPresent()){
+                LedgerEntry discharger = discharged.get();
+                throw new HoldAlreadyDischargedException(entryId, discharger.getEntryId(), discharger.getTransactionType());
+            }
             LedgerEntry settledEntry = transfer(SUSPENSE_ACCOUNT, BILLER_ACCOUNT, entry.getCredited_amount(), idempotencyKey,null,entryId,TransactionType.SETTLEMENT);
             return settledEntry;
         } else{
-            throw new UnHoldTransaction(entryId);
+            throw new UnHoldTransactionException(entryId);
         }
     }
 

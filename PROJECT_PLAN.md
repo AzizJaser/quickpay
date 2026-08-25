@@ -364,6 +364,33 @@ operation into a reported success; and a client-facing `detail` must be built fr
 `getBindingResult().getFieldErrors()`, never from `getMessage()`/`getParameter()`, which
 dump controller signatures, DTO class names and Spring's internal message codes to the caller.
 
+✅ **A 409 now carries what the caller needs to recover.** Found while wiring the bill
+service: `/settle` can return 409 for **two opposite reasons** — a duplicate idempotency key
+(the same request replayed, safe to treat as success) or `uq_entry_discharged_once` (the
+hold was discharged by something else). Indistinguishable by status alone, and the second
+has a dangerous case: a hold that was **released** (money already back with the customer)
+would be read as "settled" and the bill marked `Paid`.
+
+Deferring it to the EOD sweep does not work — the sweep would re-inquire, re-capture, hit
+the same 409, and loop forever, leaving the bill permanently `Reserved`. The poison-row
+problem, in the bill service.
+
+Fix: `settle` pre-checks `findEntryByHoldId` and throws `HoldAlreadyDischargedException`
+carrying **the hold id, the discharging entry id, and its type**, surfaced as
+`ProblemDetail` properties. The bill service reads `dischargeType` and reconciles in the
+same call — `SETTLEMENT → Paid`, `RELEASE → Rejected` — with no extra round trip and no
+biller inquiry. Verified both paths live.
+
+**Principle:** an error response should carry what the caller needs to recover. A bare 409
+says "no" and leaves them stuck; one that says *"released by entry X"* tells them exactly
+what to do.
+
+**Two supporting lessons:** the pre-check produces a *good error*, the unique index provides
+the *guarantee* — check-then-act races, so both are needed. And the query uses `@Query` with
+`coalesce(...)` rather than a derived `...OrSettlesEntryId` method, because only the
+`coalesce` form matches `uq_entry_discharged_once`; the derived version would seq-scan. The
+integrity constraint doubles as the lookup index.
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
