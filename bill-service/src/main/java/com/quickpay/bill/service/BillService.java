@@ -9,7 +9,9 @@ import com.quickpay.bill.dto.response.TransferResponse;
 import com.quickpay.bill.enums.BillStatus;
 import com.quickpay.bill.enums.BillerStatus;
 import com.quickpay.bill.exception.BillNotFoundException;
+import com.quickpay.bill.exception.FundIsReleasedException;
 import com.quickpay.bill.exception.ReserveDeclinedException;
+import com.quickpay.bill.exception.SettleRejectedException;
 import com.quickpay.bill.repository.BillRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -107,8 +109,17 @@ public class BillService {
         }
         switch (result.status()){
             case PAID: {
-                walletClient.capture(bill.getAmount(),"c" + bill.getPaymentId().replace("-",""));
-                bill.setStatus(BillStatus.Paid);
+                try {
+                    walletClient.capture(bill.getEntryId(), "c" + bill.getPaymentId().replace("-",""));
+                    bill.setStatus(BillStatus.Paid);
+                } catch (FundIsReleasedException e) {
+                    logger.warn("hold for payment {} was already released — marking Rejected", bill.getPaymentId());
+                    bill.setStatus(BillStatus.Rejected);
+                } catch (SettleRejectedException e) {
+                    logger.error("wallet refused to settle entry {} for payment {} — needs investigation",
+                            bill.getEntryId(), bill.getPaymentId());
+                    bill.setStatus(BillStatus.Failed);
+                }
                 billRepository.save(bill);
             } break;
             case FAILED: {

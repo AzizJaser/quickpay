@@ -5,5 +5,6 @@ public enum BillStatus {
     Pending,
     Reserved,
     Rejected,
-    Paid
+    Paid,
+    Failed
 }

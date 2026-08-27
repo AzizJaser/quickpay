@@ -162,7 +162,7 @@ public class BillServiceIntegrationTest {
         assertEquals(BillStatus.Paid, fromDB.getStatus());
 
         // ASSERT
-        verify(walletClient).capture(reserved.getAmount(), captureKey);
+        verify(walletClient).capture(reserved.getEntryId(), captureKey);
         verify(walletClient,never()).reverse(anyString(),anyString());
     }
 
@@ -183,33 +183,38 @@ public class BillServiceIntegrationTest {
         // ASSERT
         assertEquals(BillStatus.Rejected, fromDB.getStatus());
         verify(walletClient).reverse("ENTRY-456", reversKey);
-        verify(walletClient,never()).capture(anyLong(),anyString());
+        verify(walletClient,never()).capture(anyString(),anyString());
     }
 
     @Test
-    public void resolve_calledTwice_capturesTwice(){
-        //ARRANGE: create bill and reserve (customer -> suspense)
+    public void resolve_calledTwice_capturesOnce(){
+        // ARRANGE: create the bill and reserve it (customer -> suspense)
         Bill bill = billService.createPayment("BILL-REF-07","000000000001",500L,"IDMP-KEY-07");
         assertEquals(BillStatus.Pending, bill.getStatus());
+
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
-        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey)).thenReturn(new TransferResponse("ENTRY-321","rIDMP-KEY-07"));
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey))
+                .thenReturn(new TransferResponse("ENTRY-321","rIDMP-KEY-07"));
+
         Bill reserved = billService.reserveFunds(bill);
         assertEquals(BillStatus.Reserved, reserved.getStatus());
+        assertEquals("ENTRY-321", reserved.getEntryId());
+
         String captureKey = "c" + reserved.getPaymentId().replace("-","");
 
-        // ACT: pay twice 'assume the biller returned PAID in both'
-        Bill paid = billService.resolve(reserved,new BillerResult(reserved.getBillReference(),BillerStatus.PAID,"BILR-03"));
-        Bill paid2 = billService.resolve(reserved,new BillerResult(reserved.getBillReference(),BillerStatus.PAID,"BILR-03"));
-        when(walletClient.capture(paid.getAmount(),captureKey)).thenReturn(new TransferResponse("ENTRY-321","rIDMP-KEY-07"));
-        Bill fromDB = billRepository.findByPaymentId(paid.getPaymentId()).orElseThrow();
-        Bill fromDB2 = billRepository.findByPaymentId(paid2.getPaymentId()).orElseThrow();
+        // ACT: resolve twice, biller says PAID both times
+        Bill paid  = billService.resolve(reserved, new BillerResult(reserved.getBillReference(), BillerStatus.PAID, "BILR-03"));
+        Bill paid2 = billService.resolve(reserved, new BillerResult(reserved.getBillReference(), BillerStatus.PAID, "BILR-03"));
 
         // ASSERT
-        assertEquals(BillStatus.Paid,paid.getStatus());
-        assertEquals(paid,paid2);
-        verify(walletClient).capture(paid.getAmount(),captureKey);
+        assertEquals(BillStatus.Paid, paid.getStatus());
+        assertEquals(BillStatus.Paid, paid2.getStatus());
+        Bill fromDB = billRepository.findByPaymentId(paid.getPaymentId()).orElseThrow();
+        assertEquals(BillStatus.Paid, fromDB.getStatus());
 
+        verify(walletClient, times(1)).capture("ENTRY-321", captureKey);
     }
+
 }
 
 

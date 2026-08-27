@@ -32,4 +32,24 @@ public class GlobalExceptionHandler {
         problem.setTitle("Bill is not found");
         return problem;
     }
+
+    @ExceptionHandler(SettleRejectedException.class)
+    public ProblemDetail handlerSettleRejectedException(SettleRejectedException e){
+        logger.warn("Settlement of Payment number {} is rejected",e.getPaymentId());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Payment is rejected");
+        return problem;
+    }
+
+    @ExceptionHandler(FundIsReleasedException.class)
+    public ProblemDetail handlerFundIsReleasedException(FundIsReleasedException e){
+        logger.warn("Payment number {} is released and the customer is refunded",e.getPaymentId());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Payment is released");
+        return problem;
+    }
 }
