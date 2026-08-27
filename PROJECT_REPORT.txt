@@ -461,7 +461,131 @@ KNOWN GAPS, ACCEPTED
 
 
 --------------------------------------------------------------------------------
-9. HOW TO RUN
+9. DESIGN RECORD — WHO DECIDED WHAT, AND WHERE THE THINKING CHANGED
+--------------------------------------------------------------------------------
+This is a learning project, so the record of how decisions moved matters as much
+as the decisions. Kept factual on purpose, in both directions.
+
+DECISIONS MADE BY THE LEARNER (with the reasoning that drove them)
+
+  Ledger transaction types — RAISED UNPROMPTED.
+    "In the ledger I will see only that it's a transaction; I don't know if it's a
+    bill payment, between customer accounts, or to a local bank — and that impacts
+    the project in the long run for analytics and AI."
+    That observation started the largest design thread in this report. It was also
+    correctly timed: it is a PREREQUISITE for the history service, not a polish
+    item, because a statement line reading "transfer −250 SAR" is useless.
+
+  Money-movement kinds over product names.
+    Given the fork — should the vocabulary name PRODUCTS (BILL_PAYMENT) or MONEY
+    MOVEMENTS (HOLD, SETTLEMENT) — chose movements, which is what keeps the wallet
+    a generic ledger that never learns what a bill is.
+
+  Dedicated endpoints over a discriminator field — AND CHANGED THE REVIEWER'S
+  RECOMMENDATION.
+    The reviewer argued for one generic endpoint with a `type` field on the
+    request. The learner argued that dedicated endpoints give room for per-type
+    business logic (limits, fees, which account pairs are legal, different
+    authorization) and that this matches how top-up and withdraw already work.
+    That argument was stronger; the recommendation was withdrawn. Endpoints also
+    make the type unforgeable, which the field version could not.
+
+  last_attempt_at stays audit-only — no exponential backoff.
+    A deliberate scope decision, recorded as a choice rather than an omission so a
+    later session does not "fix" it.
+
+  Failed as a distinct bill status, rather than reusing Rejected.
+    Accepted the argument that Rejected carries an implicit promise (the customer
+    was refunded) which a refused settle does not keep.
+
+
+CHALLENGES THAT CHANGED THE DESIGN — the learner was right
+
+  "What if the one row has the two references, hold and settle, but pointing to
+  different entries?"
+    The reviewer had presented uq_entry_discharged_once as making double-discharge
+    impossible. It does not: coalesce() returns the FIRST non-null and never
+    examines the second, so a row setting both columns slips past. Demonstrated
+    live — two rows discharged the same hold with the index in place. This is why
+    ck_one_discharge_kind exists. The invariant held only under an assumption that
+    had never been stated or enforced.
+
+  "Can't it be traced by entry_id and reverses_entry_id?"
+    The reviewer had proposed adding correlation_id to the ledger to make
+    settlements traceable. The question exposed that RELEASE rows already linked
+    back via reverses_entry_id while SETTLEMENT rows linked to nothing — and led
+    to a better fix: settles_entry_id, a structural relationship carrying a
+    uniqueness invariant, rather than a debugging breadcrumb. It also revealed the
+    root cause: WalletClient.capture was discarding an entry id the bill service
+    was already holding.
+
+  "The rejected bill shouldn't be swept, right?"
+    Correct — and the reason generalises: the sweep queries findByStatus(Reserved),
+    so a terminal bill is never loaded. The same shape as the notification
+    service's partial index. Terminal state means the row leaves the working set.
+
+  "Can't we do the steps of the job in the sync call?"
+    Aimed at a weak suggestion — the reviewer had proposed leaving a 409 conflict
+    for the EOD sweep. That would have looped forever: the sweep re-inquires,
+    re-captures, hits the same 409. The recovery had to happen in the call, which
+    is what produced the structured-409 design.
+
+  "You told me to put it in the failure section."
+    Correct; the reviewer's earlier instruction had been ambiguous about placement
+    versus condition.
+
+
+MISUNDERSTANDINGS WORKED THROUGH — where the mental model actually changed
+
+  Archiving processed_events. The instinct was to move finished rows to an archive
+  table to reduce query cost. Two things had to land: a correct partial index
+  already means the query never touches those rows (so archiving buys nothing for
+  cost), and archiving DELIVERED rows re-opens duplicate sends, because the row is
+  the dedup ledger. Resolved into: retention is age-based, never status-based.
+
+  Int codes versus string enums. Proposed storing the transaction type as an int
+  "for freedom to rename". This conflated the IDENTIFIER (stored, ~never changes)
+  with the DISPLAY LABEL (presented, changes often and per language). The label is
+  a presentation mapping regardless; the int only costs legibility.
+
+  MDC as a method parameter. The correlation id was initially threaded into
+  deliver() as an argument and never read. MDC exists precisely so the value is
+  NOT threaded through signatures — a parameter gives it to one method, MDC gives
+  it to every method on the thread.
+
+  Returning 200 for an already-settled hold. Correct for one case, dangerous for
+  the other: a hold already RELEASED has the money back with the customer, so
+  reporting "settled" would mark the bill Paid. The resolution came from noticing
+  the capture idempotency key is deterministic, so genuine retries never reach the
+  discharge index at all.
+
+  A recurring habit, named and worked on: wrapping a conditional around an entire
+  flow when only one value varies. It produced bugs four separate times (the
+  correlation filter twice, the RestClient interceptor, the TaskDecorator) — each
+  time the fix was to compute the varying value in one branch and leave everything
+  after it unconditional.
+
+
+CORRECTIONS THE OTHER WAY — reviewer errors, recorded for honesty
+
+  Stated that reverses_entry_id had no self-FK and that adding one to
+  settles_entry_id would leave the columns inconsistent. Wrong — fk_reversed_entry_id
+  already existed; the earlier schema output had been truncated before it.
+
+  Suggested deferring a settle 409 to the EOD sweep. That would have looped
+  forever (see above).
+
+  Labelled a forced Bitmap Index Scan as "eliminating the sort" during the volume
+  test. A bitmap scan does not preserve index order, so the Sort node remained;
+  only a plain Index Scan gets the ordering for free.
+
+  Ran a settle test against an entry id that did not exist, concluded a handler was
+  broken, and had to re-run correctly. The flawed test did surface a real bug — the
+  catch-all exception handler returning 500 for client mistakes — but by accident.
+
+
+--------------------------------------------------------------------------------
+10. HOW TO RUN
 --------------------------------------------------------------------------------
   docker compose up -d          Postgres × 3, RabbitMQ (5672, UI 15672)
   then start, in any order:
