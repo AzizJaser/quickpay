@@ -391,6 +391,43 @@ the *guarantee* — check-then-act races, so both are needed. And the query uses
 `coalesce` form matches `uq_entry_discharged_once`; the derived version would seq-scan. The
 integrity constraint doubles as the lookup index.
 
+✅ **Bill service now speaks in domain terms.** `reserve` → `/v1/transfer/hold`,
+`capture` → `/v1/transfer/settle` taking the **hold's entry id** (the value `reserveFunds`
+already stored and used to discard). `SUSPENSE_ACCOUNT`, `Biller_ACCOUNT` and the generic
+`transfer()` are deleted — the bill service no longer knows the wallet's account numbering.
+
+**Every branch out of `capture` reaches a terminal bill state**, which is what stops the
+sweep looping: 409 with no properties (duplicate key) and 409 with `dischargeType
+SETTLEMENT` both **return normally** — same outcome as success, and an exception whose
+handler does nothing different is a liability, because forgetting to catch it strands the
+bill. Only `RELEASE` throws. A 400 throws `SettleRejectedException` → new **`Failed`**
+status (bill-service `V2`), *not* `Rejected`: `Rejected` implies the customer was refunded
+(the FAILED path reverses first), while a refused settle leaves the hold intact, so
+`Rejected` would lie about where the money is.
+
+**Verified end to end**, including the race this was all for: biller settles but the caller
+times out (simulator `TIMEOUT` mode), the hold is released behind the bill service's back,
+the sweep then inquires and captures → wallet answers 409 `dischargeType RELEASE` → bill
+becomes **`Rejected`**. Previously `capture` swallowed the 409 and `resolve` set `Paid`
+unconditionally, so the bill would have claimed payment while the customer had their money
+back and the biller had never been paid.
+
+🧹 **Stranded test data cleaned (2026-08-27).** 6 bills sat `Reserved` from sessions where
+the biller was down; the simulator had no record of them so `NOT_FOUND` meant the sweep
+could never resolve them. All five outstanding holds were released **through the API**
+(never by editing the ledger) and the bills reconciled to `Rejected`. Sweep working set is
+now empty.
+
+⚠️ **The cleanup left a trap for the backfill.** `revers` derives its type from the target,
+and four of those holds predate `V13`, so their discharges were typed **`REVERSAL`**, not
+`RELEASE`. Once the backfill types those holds as `HOLD`, the held-money identity
+`SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` gains +4,050 that is never subtracted.
+**The backfill must type discharge rows by account movement too** (`003 → customer` is a
+`RELEASE`), not merely fill nulls on holds.
+
+*(This also proved the backfill's value: "held total" read **75** while 4,050 was genuinely
+held, because untyped rows are invisible to `SUM(HOLD)` — a 98% undercount.)*
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
@@ -428,7 +465,7 @@ breadcrumb — and it carries the uniqueness invariant a correlation id cannot.)
 
 **Build order:** ✅ `V13` (`transaction_type` + `settles_entry_id` + `uq_entry_discharged_once`)
 ✅ `V14` (`ck_one_discharge_kind`) ✅ `V15` (seven-value vocabulary) ✅ **wallet Java side done**
-→ ⏳ bill service switches to the new endpoints → ⏳ backfill by derivation →
+→ ✅ bill service switched to the new endpoints → ⏳ backfill by derivation →
 backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
 `UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
 lesson) → contract to `NOT NULL`.
