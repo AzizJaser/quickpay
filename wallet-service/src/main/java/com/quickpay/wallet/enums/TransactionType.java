@@ -7,5 +7,12 @@ public enum TransactionType {
     SETTLEMENT,
     RELEASE,
     WITHDRAWAL,
-    REVERSAL
+    REVERSAL;
+
+    public boolean isCustomerFacing(){
+        return switch (this) {
+            case HOLD, RELEASE, SETTLEMENT -> false;
+            case DEPOSIT, TRANSFER, WITHDRAWAL, REVERSAL -> true;
+        };
+    }
 }

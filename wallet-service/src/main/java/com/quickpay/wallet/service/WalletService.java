@@ -91,7 +91,7 @@ public class WalletService {
         LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id,settles_entry_id,transactionType);
         ledgerEntryRepository.save(entry);
 
-        if(entry.getTransactionType() != TransactionType.HOLD){
+        if(entry.getTransactionType().isCustomerFacing()){
             if(!debitedWallet.isInternal()){
                 notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
             }

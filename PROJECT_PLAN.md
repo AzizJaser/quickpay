@@ -462,6 +462,34 @@ works where the reference was always written.** Build reporting on the type iden
 `reverses_entry_id_unique` are now scaffolding — superseded by `attnotnull` and
 `uq_entry_discharged_once` respectively.
 
+✅ **Notification ownership decided — `TransactionType.isCustomerFacing()`.** The wallet
+now suppresses events for the whole **hold lifecycle** (`HOLD`, `SETTLEMENT`, `RELEASE`);
+`DEPOSIT`, `WITHDRAWAL`, `TRANSFER` and `REVERSAL` still notify.
+
+**The rule: the service that knows *why* the money moved owns the message.** The wallet can
+only say "you received 55 SAR"; the bill service can say "your SEC bill couldn't be paid —
+you've been refunded". So `bill.rejected` belongs to the bill service, not to the wallet's
+`RELEASE`.
+
+Before this, a bill payment notified the customer at **reserve** — and that message could be
+outright wrong, since a declined biller returns the money that was already announced as
+sent. Now a full bill payment (`HOLD` + `SETTLEMENT`) and a full refund (`HOLD` + `RELEASE`)
+each produce **zero** wallet events. That is a gap made *visible*, not created: it is exactly
+what the bill service's own events will fill, and it guarantees the customer gets **one**
+message per bill rather than two.
+
+Implemented as a method on the enum rather than an exclusion list in `WalletService`,
+because a `switch` over all seven constants with **no `default`** means adding an eighth type
+fails to compile until someone answers the question. An exclusion list would have let a new
+type inherit "notify" silently.
+
+⚠️ **Consequence of the accepted `HOLD`-means-bill risk, now concrete:** the wallet cannot
+tell a bill-originated hold from any other — by design, since it never learns what a bill is.
+So **all** releases are suppressed, and any future flow that creates holds inherits the
+obligation to publish its own events. A hold released by an ops correction currently
+notifies nobody. Rejected: passing a "notify" flag into `/revers` (puts a notification
+concern into a money API, and a caller can get it wrong).
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
