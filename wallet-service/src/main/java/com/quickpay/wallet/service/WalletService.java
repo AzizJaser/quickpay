@@ -91,11 +91,13 @@ public class WalletService {
         LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id,settles_entry_id,transactionType);
         ledgerEntryRepository.save(entry);
 
-        if(!debitedWallet.isInternal()){
-            notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
-        }
-        if (!creditedWallet.isInternal()){
-            notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+        if(entry.getTransactionType() != TransactionType.HOLD){
+            if(!debitedWallet.isInternal()){
+                notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+            }
+            if (!creditedWallet.isInternal()){
+                notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+            }
         }
         logger.info("ledger with entry id {} saved",entry.getEntryId());
         return entry;
