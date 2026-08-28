@@ -515,6 +515,30 @@ already carry a null `entry_id` (those are legitimately from the reserve-decline
 they show the column does go null). **The 409 swallow in `reserve` deserves the same
 treatment `capture` got** — it currently discards a response it then tries to deserialise.
 
+🔨 **IN PROGRESS — bill outbox.** `V3` (table + partial index), entity and repository
+written, **not yet applied**. Remaining: a payload record, the transactional write, the
+relay job, then the notification-side binding and message text.
+
+**Transaction boundary — decided, and the learner was right.** `resolve` must **not** be
+`@Transactional`: it makes a synchronous HTTP call to the wallet with a 2-second timeout
+that is not ours, and wrapping it would tie a pooled DB connection to someone else's
+latency. But the outbox guarantee still needs the status change and the event row to commit
+together. The resolution is in the **ordering** — the HTTP call happens *first*, then the
+writes:
+
+    1. walletClient.capture(...)     ← HTTP, OUTSIDE any transaction
+    2. bill.setStatus(...)           ┐
+    3. billRepository.save(bill)     ├ one @Transactional method
+    4. write the outbox event        ┘
+
+⚠️ Extract 2–4 onto a **separate bean**. `this.persistOutcome(...)` is self-invocation, which
+bypasses the proxy and silently gives no transaction at all — §9, hit three times already.
+
+**Open question for the payload:** the notification service needs a `cif` (contact details
+are looked up fresh at delivery time, never snapshotted). `Bill` stores `wallet_number`, not
+`cif`. Either derive it (wallet numbers are `%02d` + cif) or carry the wallet number and let
+notifications resolve it — decide deliberately.
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
