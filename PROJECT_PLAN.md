@@ -490,6 +490,31 @@ obligation to publish its own events. A hold released by an ops correction curre
 notifies nobody. Rejected: passing a "notify" flag into `/revers` (puts a notification
 concern into a money API, and a caller can get it wrong).
 
+✅ **DECIDED — `Failed` publishes no customer event.** The bill outbox carries exactly two
+types: `bill.payment.paid` and `bill.payment.rejected`.
+
+`Failed` means the wallet refused the settle as invalid — never a business outcome, always
+the bill service having asked for something impossible. It requires manual intervention, and
+a customer cannot act on "we do not know where your money is"; such a message invites a
+support call that cannot be answered. It gets an **ops signal** (ERROR log, later an alert),
+not an SMS.
+
+⚠️ **`Failed` is reachable, and the path is crash recovery — worth testing in Phase 7:**
+
+    reserve → wallet commits the hold
+            → bill service crashes before saving the bill
+    retry   → same reserve key → wallet returns 409 duplicate
+            → WalletClient.reserve's onStatus(409) swallows it
+            → .body(TransferResponse.class) has no TransferResponse to map (the
+              duplicate response body is EMPTY — verified)
+            → entryId null → bill saved Reserved with entry_id null
+            → capture(null) → 400 → Failed
+
+The empty-body-on-duplicate behaviour was confirmed against the running wallet. Three bills
+already carry a null `entry_id` (those are legitimately from the reserve-declined path, but
+they show the column does go null). **The 409 swallow in `reserve` deserves the same
+treatment `capture` got** — it currently discards a response it then tries to deserialise.
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
