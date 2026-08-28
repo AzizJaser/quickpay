@@ -428,6 +428,40 @@ and four of those holds predate `V13`, so their discharges were typed **`REVERSA
 *(This also proved the backfill's value: "held total" read **75** while 4,050 was genuinely
 held, because untyped rows are invisible to `SUM(HOLD)` — a 98% undercount.)*
 
+✅ **THREAD COMPLETE — the ledger is fully typed.** `V16` backfilled all 57 untyped rows
+by account-movement derivation, `V17`/`V18`/`V19` contracted `transaction_type` to
+`NOT NULL`. All six endpoints verified live, each producing its correct type — every value
+in the vocabulary is now reachable from a running endpoint.
+
+**Two design choices inside the backfill worth keeping:**
+
+*No `ELSE` on the `CASE`.* An unmatched account pair stays `NULL`, so the later
+`SET NOT NULL` **fails loudly** rather than letting a mislabelled row through. `ELSE
+'TRANSFER'` would have been the `routing_key` trap again — a plausible guess, quietly
+believed. Fail-closed for free.
+
+*`TRANSFER` detected via `wallet.is_internal`, not account-number patterns.* Matching on
+`'0000000000%'` would have re-introduced the exact coupling this whole thread removed. Took
+three attempts to land: the first subquery was **uncorrelated** (asked "do any internal
+wallets exist?" → always true), the second was correlated but omitted `is_internal` (asked
+"does a wallet exist for either side?" → always true, guaranteed by the FKs). The test for
+a correlated subquery: *would it give a different answer for a different outer row?*
+
+**The cleanup trap was real and is closed:** four discharge rows typed `REVERSAL` (their
+targets predated V13) were corrected to `RELEASE` in the same migration. Held-money identity
+now reads **0**, which is correct — every outstanding hold was released during cleanup.
+
+⚠️ **Two ways to measure held money now disagree, and only one is right.**
+`SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = **0** ✅, while the reference-based query
+(*"holds nothing discharges"*) still reads **6,025** — four pre-constraint rows took money
+out of suspense without recording `settles_entry_id`, and that link cannot be
+reconstructed. **Counting by type survives incomplete history; counting by reference only
+works where the reference was always written.** Build reporting on the type identity.
+
+🧹 **Optional tidy, not done:** `ck_ledger_transaction_type_not_null` and
+`reverses_entry_id_unique` are now scaffolding — superseded by `attnotnull` and
+`uq_entry_discharged_once` respectively.
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
@@ -465,7 +499,8 @@ breadcrumb — and it carries the uniqueness invariant a correlation id cannot.)
 
 **Build order:** ✅ `V13` (`transaction_type` + `settles_entry_id` + `uq_entry_discharged_once`)
 ✅ `V14` (`ck_one_discharge_kind`) ✅ `V15` (seven-value vocabulary) ✅ **wallet Java side done**
-→ ✅ bill service switched to the new endpoints → ⏳ backfill by derivation →
+→ ✅ bill service switched to the new endpoints → ✅ **V16 backfill** → ✅ **V17/V18/V19
+contract to NOT NULL** → **THREAD COMPLETE** —
 backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
 `UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
 lesson) → contract to `NOT NULL`.

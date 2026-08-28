@@ -1,4 +1,4 @@
-================================================================================
+let's ================================================================================
 QUICKPAY — PROJECT REPORT
 A ledger-backed payment system built as a production-engineering learning project
 Report generated: 2026-08-27

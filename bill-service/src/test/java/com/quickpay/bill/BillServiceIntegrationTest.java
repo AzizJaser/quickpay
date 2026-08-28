@@ -209,6 +209,7 @@ public class BillServiceIntegrationTest {
         // ASSERT
         assertEquals(BillStatus.Paid, paid.getStatus());
         assertEquals(BillStatus.Paid, paid2.getStatus());
+
         Bill fromDB = billRepository.findByPaymentId(paid.getPaymentId()).orElseThrow();
         assertEquals(BillStatus.Paid, fromDB.getStatus());
 
