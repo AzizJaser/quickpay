@@ -19,12 +19,11 @@ notification-side binding and message text.
 endpoints with the discharge invariants, bill service switched onto them and reconciling
 on a structured 409, hold-lifecycle notifications suppressed, bill outbox table + write.
 
-⚠️ **Two facts a planning session needs:**
-1. **Phase 7 is gated on history #4**, which is not itself a Stage-1 topic — so Stage 1
-   cannot close on its own terms. Either pull #4 forward or drop the four-services gate.
-2. **No Resilience4j anywhere in the repo** — no retry-with-backoff, no circuit breaker.
-   Timeouts exist. The roadmap's topic #5 names circuit breakers explicitly, so that topic
-   is **not** done despite the saga working.
+🔄 **Two decisions taken 31 Aug — see the ◀ NEXT block for the full reasoning:**
+1. **The four-services gate is DROPPED.** Sabotage runs in **September on the three-service
+   system**; history #4 is parked to the Kafka project by v2.2 and gets its own addendum.
+2. **Circuit breakers are sabotage-driven, not pre-built.** Topic #5 closes *inside* Phase 7,
+   as the fix a "biller down for five minutes" scenario earns. No Resilience4j before then.
 
 *(The rest of this section is the history of how #3 and traceability were built. The
 decision point is the ◀ NEXT block further down.)*
@@ -628,25 +627,52 @@ backfill by derivation (correct **once**, in a migration, never at runtime; use 
 `UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
 lesson) → contract to `NOT NULL`.
 
-◀ **NEXT — pick the next thread:**
-1. **Bill service publishes `BillPaid` / `BillRejected`** — notifications currently only
-   ever sees wallet events. Note the open policy question: a bill reserve already emits a
-   wallet event, so a bill payment would produce a wallet notification *and* a bill one;
-   suppression is a notifications-side call. Its outbox will need a correlation column too.
-2. **History service #4** — the last of the four; CDC/Debezium was raised as a
-   learning interest.
-3. **Phase 7 sabotage** — the *traceability gate* is now cleared, but the **build is not
-   finished**: the bill service still publishes nothing, and history #4 does not exist.
-   Sabotaging an incomplete system means repeating the pass once those land. **Finish 1
-   and 2 first**, then sabotage the whole thing once.
+◀ **NEXT — the ordered path to Phase 7 (decided 31 Aug, rev 10):**
 
-**Still missing to be feature-complete (4 services, req 5):**
-- bill → notification: no `BillPaid` / `BillRejected` events yet, so notifications only
-  ever sees wallet events. Needs its own outbox + a correlation column (V12's shape).
-- history #4: not started. Read model over wallet + bill; CDC/Debezium raised as the
-  learning angle. Will need the correlation id carried through whatever CDC path is used —
-  worth checking early, since Debezium reads the WAL and sees only columns, which is
-  another argument for the id living *in the row* rather than in memory.
+**1. Finish bill → notification.** Relay job (needs AMQP wiring in the bill service first),
+then the notification-side binding for `bill.#` and message text for the two new types.
+This is the only thing between here and sabotage.
+
+**2. Phase 7 — SABOTAGE, September, on the THREE-service system.**
+
+🔄 **DECISION REVERSED — the four-services gate is DROPPED.** The gate said "sabotage once,
+after all four services exist". That was defensible only while #4 was near. **v2.2 parks
+history #4 to the Kafka project (~May 27)**, so the gate would delay Phase 7 by nine months
+to wait for a *read model* — while the whole distributed-transaction surface is already
+built and ready to break: saga with compensation, transactional outbox, broker,
+at-least-once delivery, idempotent consumer, two reconciliation jobs, and correlation IDs
+to read it all with. **#4 gets its own small sabotage addendum when it is born** (projection
+lag, CDC lag — genuinely different scenarios, and genuinely later).
+
+**3. Phase 8 — k6 load test.** Requires a written breaking-TPS and bottleneck prediction
+before the first run.
+
+---
+
+### Topic #5 (circuit breakers) closes INSIDE Phase 7, not before it
+
+**DECIDED: sabotage-driven, not pre-built.** There is no Resilience4j in the repo — no
+retry-with-backoff, no circuit breaker. Building one now would be studying a topic in the
+abstract, which the standing rules forbid, and gold-plating, which rule 6 forbids.
+
+Instead it is a Phase 7 scenario that *earns* the fix:
+
+> **Scenario — biller (or provider) down for five minutes.** Predict first, then watch
+> every call burn its full timeout. Add the Resilience4j breaker as the fix that scenario
+> produced. Topic #5 then closes honestly, with evidence.
+
+⚠️ **Prediction hint — the EOD sweep is serial.** `fixedDelay` waits for completion and each
+`inquire` burns the full 2s timeout, so with *N* stranded bills one pass takes *N* × 2s. At
+~30 bills that is a minute, and **the sweep stops keeping up with its own interval** — a
+more visible failure than a slow request, and precisely what fail-fast + half-open fixes.
+Worth predicting the `@Async` pool behaviour too.
+
+---
+
+**Feature-complete is now THREE services + the bill event flow** (not four). History #4 is
+no longer a Stage-1 dependency; when it does arrive it will need the correlation id carried
+through whatever CDC path is used — Debezium reads the WAL and sees only columns, which is
+another argument for the id living *in the row* rather than in memory.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and
