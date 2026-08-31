@@ -6,5 +6,12 @@ public enum BillStatus {
     Reserved,
     Rejected,
     Paid,
-    Failed
+    Failed;
+
+    public boolean requireNotification(){
+        return switch (this){
+            case Paid,Rejected -> true;
+            case Failed,Reserved,Pending -> false;
+        };
+    }
 }

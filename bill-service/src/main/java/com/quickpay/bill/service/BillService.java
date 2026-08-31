@@ -35,6 +35,8 @@ public class BillService {
 
     private final BillerClient billerClient;
 
+    private final BillOutcomeService billOutcomeService;
+
     private final Logger logger = LoggerFactory.getLogger(BillService.class);
 
 
@@ -122,12 +124,12 @@ public class BillService {
                             bill.getEntryId(), bill.getPaymentId());
                     bill.setStatus(BillStatus.Failed);
                 }
-                billRepository.save(bill);
+                billOutcomeService.recordOutcome(bill);
             } break;
             case FAILED: {
                 walletClient.reverse(bill.getEntryId(), "v" + bill.getPaymentId().replace("-",""));
                 bill.setStatus(BillStatus.Rejected);
-                billRepository.save(bill);
+                billOutcomeService.recordOutcome(bill);
             } break;
             case NOT_FOUND: // nothing
                 break;

@@ -52,4 +52,14 @@ public class GlobalExceptionHandler {
         problem.setTitle("Payment is released");
         return problem;
     }
+
+    @ExceptionHandler(ParsingNotificationEventException.class)
+    public ProblemDetail handlerParsingNotificationEventException(ParsingNotificationEventException e){
+        logger.error("payment number " + e.getPaymentId() + " can not be parsed...");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+        problem.setTitle("Error while serialise a notification event");
+        return problem;
+    }
 }

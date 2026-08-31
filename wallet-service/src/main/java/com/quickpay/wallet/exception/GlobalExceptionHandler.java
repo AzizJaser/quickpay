@@ -127,7 +127,7 @@ public class GlobalExceptionHandler {
         logger.error("Can not serialise a notification event for entry ID: {}",e.getEntryId());
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
-        problem.setTitle("Error whole serialise a notification event");
+        problem.setTitle("Error while serialise a notification event");
         return problem;
     }
 
