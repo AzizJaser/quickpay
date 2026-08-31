@@ -35,7 +35,9 @@ public class Bill {
     @Column(insertable = false, updatable = false,name = "created_at")
     private LocalDateTime created_at;
 
-    public Bill(java.lang.String billReference, java.lang.String walletNumber, Long amount, java.lang.String idempotencyKey) {
+    private String cif;
+
+    public Bill(String billReference, String walletNumber, Long amount, String idempotencyKey) {
         this.paymentId = UUID.randomUUID().toString();
         this.billReference = billReference;
         this.walletNumber = walletNumber;

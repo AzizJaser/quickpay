@@ -5,6 +5,7 @@ import com.quickpay.bill.client.WalletClient;
 import com.quickpay.bill.domain.Bill;
 import com.quickpay.bill.dto.request.BillerPayRequest;
 import com.quickpay.bill.dto.response.BillerResult;
+import com.quickpay.bill.dto.response.HoldResponse;
 import com.quickpay.bill.dto.response.TransferResponse;
 import com.quickpay.bill.enums.BillStatus;
 import com.quickpay.bill.enums.BillerStatus;
@@ -37,7 +38,7 @@ public class BillService {
     private final Logger logger = LoggerFactory.getLogger(BillService.class);
 
 
-    public Bill createPayment(java.lang.String billReference, java.lang.String walletNumber, Long amount, java.lang.String idempotencyKey){
+    public Bill createPayment(String billReference, String walletNumber, Long amount, String idempotencyKey){
         Optional<Bill> existing = billRepository.findByIdempotencyKey(idempotencyKey);
         if(existing.isPresent()){
             return existing.get();
@@ -60,9 +61,10 @@ public class BillService {
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
         try {
             logger.info("Calling wallet service to reserve funds for bill number "+bill.getBillReference());
-            TransferResponse response = walletClient.reserve(bill.getWalletNumber(),bill.getAmount(),reserveKey);
+            HoldResponse response = walletClient.reserve(bill.getWalletNumber(),bill.getAmount(),reserveKey);
             logger.info("Response received from wallet service");
             bill.setEntryId(response.entryId());
+            bill.setCif(response.cif());
 
             bill.setStatus(BillStatus.Reserved);
 

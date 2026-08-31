@@ -4,6 +4,7 @@ import com.quickpay.bill.dto.request.HoldRequest;
 import com.quickpay.bill.dto.request.ReverseRequest;
 import com.quickpay.bill.dto.request.SettleRequest;
 import com.quickpay.bill.dto.request.TransferRequest;
+import com.quickpay.bill.dto.response.HoldResponse;
 import com.quickpay.bill.dto.response.TransferResponse;
 import com.quickpay.bill.exception.FundIsReleasedException;
 import com.quickpay.bill.exception.ReserveDeclinedException;
@@ -38,7 +39,7 @@ public class WalletClient {
                 .body(TransferResponse.class);
     }
 
-    public TransferResponse reserve(String debited,Long amount, String idempotencyKey){
+    public HoldResponse reserve(String debited, Long amount, String idempotencyKey){
         return walletRestClient
                 .post()
                 .uri("/v1/transfer/hold")
@@ -52,7 +53,7 @@ public class WalletClient {
                 .onStatus(status -> status.value()==409, ((request, response) -> {
                     return;
                 }))
-                .body(TransferResponse.class);
+                .body(HoldResponse.class);
     }
 
     public void capture(String entryId, String idempotencyKey){

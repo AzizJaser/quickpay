@@ -2,6 +2,7 @@ package com.quickpay.wallet.web;
 
 import com.quickpay.wallet.domain.LedgerEntry;
 import com.quickpay.wallet.dto.request.*;
+import com.quickpay.wallet.dto.response.HoldResponse;
 import com.quickpay.wallet.dto.response.TransactionResponse;
 import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.service.WalletService;
@@ -43,9 +44,9 @@ public class LedgerEntryController {
     }
 
     @PostMapping("/hold")
-    public ResponseEntity<TransactionResponse> hold(@RequestBody @Valid HoldRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
-        LedgerEntry entry = walletService.hold(request.walletNumber(), request.amount(), idempotencyKey);
-        return ResponseEntity.ok(new TransactionResponse(entry.getEntryId(),entry.getIdempotencyKey()));
+    public ResponseEntity<HoldResponse> hold(@RequestBody @Valid HoldRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
+        HoldResponse response = walletService.hold(request.walletNumber(), request.amount(), idempotencyKey);
+        return ResponseEntity.ok(new HoldResponse(response.entryId(),response.idempotencyKey(), response.cif()));
     }
 
     @PostMapping("/settle")

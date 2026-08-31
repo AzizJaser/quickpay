@@ -6,6 +6,7 @@ import com.quickpay.wallet.domain.LedgerEntry;
 import com.quickpay.wallet.domain.NotificationEvent;
 import com.quickpay.wallet.domain.Wallet;
 import com.quickpay.wallet.dto.event.MoneyMovedPayload;
+import com.quickpay.wallet.dto.response.HoldResponse;
 import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.enums.WalletStatus;
 import com.quickpay.wallet.exception.*;
@@ -119,8 +120,9 @@ public class WalletService {
         return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id,null,type);
     }
     @Transactional
-    public LedgerEntry hold(String wallet_number,Long amount,String idempotencyKey){
-        return transfer(wallet_number,SUSPENSE_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.HOLD);
+    public HoldResponse hold(String wallet_number, Long amount, String idempotencyKey){
+        LedgerEntry entry = transfer(wallet_number,SUSPENSE_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.HOLD);
+        return new HoldResponse(entry.getEntryId(),idempotencyKey,getCifByWalletNumber(wallet_number));
     }
 
     @Transactional
@@ -209,5 +211,11 @@ public class WalletService {
         }
         NotificationEvent event = new NotificationEvent(payload,null,eventType,UUID.randomUUID(), MDC.get("correlationId"));
         return event;
+    }
+    private String getCifByWalletNumber(String walletNumber){
+        Wallet wallet = walletRepository.findByWalletNumber(walletNumber).orElseThrow(
+                () -> new WalletNotFoundException("Wallet was not found with id = "+walletNumber,walletNumber)
+        );
+        return wallet.getCif();
     }
 }
