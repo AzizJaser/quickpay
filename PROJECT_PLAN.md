@@ -515,9 +515,43 @@ already carry a null `entry_id` (those are legitimately from the reserve-decline
 they show the column does go null). **The 409 swallow in `reserve` deserves the same
 treatment `capture` got** — it currently discards a response it then tries to deserialise.
 
-🔨 **IN PROGRESS — bill outbox.** `V3` (table + partial index), entity and repository
-written, **not yet applied**. Remaining: a payload record, the transactional write, the
-relay job, then the notification-side binding and message text.
+🔨 **IN PROGRESS — bill outbox.** ✅ `V3` (table + partial index) and `V4` (`cif` column)
+applied · ✅ entity, repository, `PaymentEvent` payload · ✅ **cif carried from the wallet's
+hold response** · ✅ **transactional write on every resolved outcome**.
+⏳ **NEXT: the relay job** — the bill service has no AMQP wiring at all yet (no
+`spring-boot-starter-amqp`, no `spring.rabbitmq.*`, no exchange bean), so that is the setup
+step before the job itself. Then the notification-side binding and message text.
+
+**cif resolved (b): the wallet returns it at reserve time.** `/hold` gets its own
+`HoldResponse` rather than a `cif` field on the shared `TransactionResponse`, because "the
+cif" is ambiguous on the other five endpoints (a P2P has two customers, a settlement none).
+Stored on the `bill` row because the outbox event is written in `resolve`, possibly minutes
+later via the sweep, by which point the reserve response is gone — the same reason the
+correlation id is a column. Rejected: deriving `cif` from the wallet number by substring
+(puts the wallet's numbering format in the bill service, fails silently if the prefix width
+changes), and having notifications resolve it (couples delivery availability to the wallet,
+adds a failure mode to a path with a retry budget, repeats the lookup on every retry).
+
+**`cif` is not a constructor argument** — it is unknown when `createPayment` runs and
+arrives with the hold response alongside `entryId`. A constructor should take what is known
+at construction.
+
+⚠️ **Pre-existing cross-service bug found by exercising the reverse path:** bill sent
+`original_entry_id` while the wallet expects `originalEntryId`, so Jackson read **null** and
+the wallet answered 404 for an entry with a null id. The resulting
+`HttpClientErrorException` is *not* caught by `payBiller` (which catches only
+`HttpServerErrorException` and `ResourceAccessException`), so it escaped into `@Async`, was
+dropped by Spring's uncaught handler, and left the bill `Reserved` to be swept forever — a
+poison row. **Mocked tests cannot catch this class of defect**, since they stub the client
+and never check the wire format. Still open: `payBiller` catching only two specific
+exception types means any *other* HTTP error silently strands a bill.
+
+**Verified all four paths:** `Paid` → `bill.payment.paid`; declined biller →
+`bill.payment.rejected`; biller has no record → stays `Reserved`, no event; and the wallet
+writes **nothing** for any of them. One row, one eventual notification per bill payment.
+During testing one bill was recovered by the **EOD sweep**, carrying a
+`reconciliation-bills-` correlation id rather than the original request's — the run-id
+versus flow-id distinction visible in real data.
 
 **Transaction boundary — decided, and the learner was right.** `resolve` must **not** be
 `@Transactional`: it makes a synchronous HTTP call to the wallet with a 2-second timeout
