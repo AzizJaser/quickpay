@@ -5,14 +5,26 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-15 (rev 9 — service #3 complete; traceability complete; Phase 7 unblocked)**
+> Last updated: **2026-08-31 (rev 10 — ledger typed; bill↔wallet on hold/settle; bill outbox writing, relay next)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Service #3 (notifications) is COMPLETE and traceability (Bucket D) is COMPLETE.
-Phase 7 sabotage is now unblocked. Choose the next thread — see "NEXT" below.**
+**IN PROGRESS: bill → notification.** The bill outbox writes events on every resolved
+outcome; **the relay is next** — the bill service has no AMQP wiring at all yet. Then the
+notification-side binding and message text.
+
+**Done since rev 9:** ledger transaction types (V13–V19, `NOT NULL`), `hold`/`settle`
+endpoints with the discharge invariants, bill service switched onto them and reconciling
+on a structured 409, hold-lifecycle notifications suppressed, bill outbox table + write.
+
+⚠️ **Two facts a planning session needs:**
+1. **Phase 7 is gated on history #4**, which is not itself a Stage-1 topic — so Stage 1
+   cannot close on its own terms. Either pull #4 forward or drop the four-services gate.
+2. **No Resilience4j anywhere in the repo** — no retry-with-backoff, no circuit breaker.
+   Timeouts exist. The roadmap's topic #5 names circuit breakers explicitly, so that topic
+   is **not** done despite the saga working.
 
 *(The rest of this section is the history of how #3 and traceability were built. The
 decision point is the ◀ NEXT block further down.)*
@@ -1168,6 +1180,10 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-08-31 | **Bill outbox writes.** `V3` table + `V4` cif column; events written transactionally on every resolved outcome; `Failed` writes none (needs manual intervention — a customer cannot act on "we do not know where your money is"). Transaction boundary decided: HTTP **outside**, writes **inside**, on a separate bean because `this.method()` bypasses the proxy. Found a pre-existing cross-service DTO mismatch (`original_entry_id` vs `originalEntryId`) that made every reverse 404 and strand bills — the class of defect mocked tests cannot catch. **Relay next; the bill service has no AMQP wiring yet.** |
+| 2026-08-28 | **Notification ownership decided.** Wallet suppresses the whole hold lifecycle via `TransactionType.isCustomerFacing()`. Rule: *the service that knows why the money moved owns the message.* A bill payment now produces **zero** wallet events, so the customer gets **one** message, from the bill service. |
+| 2026-08-27 | **Bill service speaks hold/settle**, and no longer knows the wallet's account numbering. A 409 now carries the discharge type so the bill reconciles in the same call — `SETTLEMENT → Paid`, `RELEASE → Rejected`. Deferring that conflict to the sweep would have looped forever. New `Failed` status: `Rejected` implies the customer was refunded, which a refused settle does not. |
+| 2026-08-24 | **Ledger transaction types complete** (V13–V19). Seven money-movement kinds, `NOT NULL`, assigned server-side by endpoint. Two discharge invariants — `ck_one_discharge_kind` (a row is a reversal XOR a settlement) and `uq_entry_discharged_once` (a hold is discharged once, either way). The first exists because the learner found the `coalesce` index defeated by a row setting both columns. `settles_entry_id` added after the learner asked whether `entry_id`/`reverses_entry_id` already covered it — they did not, and settlements linked to nothing. |
 | 2026-08-15 | **Traceability complete (Bucket D)** — correlation ids now span inbound/outbound HTTP, `@Async`, `@Scheduled`, the outbox (V12/V14) and AMQP, across all three services. Landed ahead of Phase 7 as planned. Key lessons: MDC is per-thread so every boundary needs its own copy mechanism and a *time* gap can only be crossed by persistence; run-id vs item-id must never be conflated; diagnostics fail open (nullable columns + a length cap at the edge, or a header rolls back a transfer); and the plumbing is worthless without log lines — a grep returned one unrelated warning until three boundary `INFO`s were added. Verified: one transfer → five lines, two JVMs, four threads, one broker, one grep. NEXT ACTION → bill events, history #4, or Phase 7. |
 | 2026-08-11 | **Service #3 complete.** Retry job (`ResendingJob`) built and verified. **Volume test settled the open index question**: at 500k rows / 50 pending, the partial index is 16 kB and serves the live job's bind-parameter query (0.024 ms vs 55 ms seq scan); a *forced* generic plan does fall back to a 119 ms seq scan, so the protection is the cost gap, not a guarantee. Key insight: the index's biggest win is the **idle** poll, not the busy one — `fixedDelay` runs forever whether or not there is work. Retry maths validated (0.3 failure rate × 5 attempts → predicted 0.24 permanent failures, observed exactly 1). Then **V10–V13 finished the schema**: state columns `NOT NULL`, dual-writing stopped, entity fields removed, booleans and three scaffolding CHECKs dropped. Verified end to end after the drop. Decision: `last_attempt_at` stays audit-only, **no backoff**. NEXT ACTION → pick between bill-service events, correlation IDs, or history #4. |
 | 2026-08-10 | **Terminal state added** (V7 `varchar`+`CHECK`, V8 three-branch `CASE` backfill, dual-write in `deliver()`). Root cause named: a boolean cannot distinguish *pending* from *gave up*, so the partial index could never shed dead rows and `attempts` incremented forever. Rejected along the way: a native PG enum (breaks Hibernate varchar binding — reproduced), `attempts` in the index predicate (couples schema to config, fails asymmetrically and silently), and archiving delivered rows (re-opens duplicate sends — the dedup ledger's lifetime is a *time* question, not a status one). Contract steps V9–V11 + index switch still owed. |
