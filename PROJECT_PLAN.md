@@ -645,11 +645,42 @@ Two things follow. **`publish_in − publish_out` is a monitorable signal** (a p
 version is publisher confirms + the `mandatory` flag, which returns unroutable messages to
 the sender — deliberately not built yet.
 
-**Notification-side decisions still open:** add `bill.payment.*` as a second binding on the
-existing queue (one consumer, one retry path) or declare a separate queue (independent
-backpressure)? And `deliver()` resolves its message text from a **two-way** check on
-`wallet.money.sent` — there are now four routing keys, and a two-way ternary cannot express
-four outcomes. Same shape as `isCustomerFacing()` on the wallet's enum.
+### ✅ DECIDED (2 Sep) — one exchange, one queue, two bindings  ·  *ADR candidate*
+
+**Exchange and queue are two separate decisions.** Splitting them dissolves the argument:
+
+**ONE topic exchange (`quickpay.events`), producers own routing-key NAMESPACES.**
+`wallet.money.*` and `bill.payment.*`. Rejected exchange-per-producer: the argument for it
+was that history #4 could then plug in with zero producer changes — but that is equally
+true of one exchange, and the shared exchange is *stronger*, because it also gives zero
+**consumer** changes when a new producer appears. With exchange-per-producer, #4 must know
+there are two exchanges today and be edited when a third arrives — more coupling, not less.
+(Exchange-per-context is real at org scale — per-exchange permissions, alternate-exchange
+policies, blast radius — but that is gold-plating here.)
+
+**ONE queue, TWO bindings.** Handling is identical, so one consumer, one retry path, one
+`processed_events` table. **Separate queues were considered and rejected as pre-solving** —
+the reviewer argued for them on Phase-7 observability grounds (independent depth = "is the
+bill flow backing up or the wallet flow?") and was talked out of it by the same rule that
+governs the circuit breaker: **fixes get earned.**
+
+⚠️ **The honest risk, deliberately left in: head-of-line blocking.** A bill-event flood or a
+poison message starves wallet notifications. **This is Phase 7 scenario material** — flood
+bill events, measure wallet notification latency, split the queues only if the evidence
+demands it. Note `@RabbitListener(queues = {a, b})` means separate queues would *not* have
+required separate listeners: queue separation buys independent depth and purge; listener
+separation buys independent concurrency. Two different things.
+
+⚠️ **Consequence — `processed_events` is now a shared dedup table across two producers.**
+Both outbox `event_id`s are **UUIDs**, so there is nothing to collide today (a raised
+concern about `bigserial` ids does not apply — verified). But if either producer ever
+switched to a sequence, the collision would be **silent** and would present as
+"notifications randomly not sent". Any new producer must keep globally-unique event ids.
+
+⏳ **Still to do on the notification side:** the `bill.payment.*` binding, and message text —
+`deliver()` resolves it from a **two-way** check on `wallet.money.sent`, and there are now
+**four** routing keys. A two-way ternary cannot express four outcomes; same shape as
+`isCustomerFacing()` on the wallet's enum.
 
 **2. Phase 7 — SABOTAGE, September, on the THREE-service system.**
 
