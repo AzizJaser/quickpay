@@ -629,9 +629,27 @@ lesson) → contract to `NOT NULL`.
 
 ◀ **NEXT — the ordered path to Phase 7 (decided 31 Aug, rev 10):**
 
-**1. Finish bill → notification.** Relay job (needs AMQP wiring in the bill service first),
-then the notification-side binding for `bill.#` and message text for the two new types.
-This is the only thing between here and sabotage.
+**1. Finish bill → notification.** ✅ AMQP wiring · ✅ **relay job publishing** —
+⏳ **only the notification side is left**: a binding for the bill routing keys, and message
+text for the two new types. This is the only thing between here and sabotage.
+
+⚠️ **Live proof of the silent-drop failure mode (2 Sep).** The bill relay publishes
+correctly, the outbox row reads `sent_at`, and **nothing consumes it** — the queue binds
+`wallet.money.*` only, so `bill.payment.paid` is accepted by the exchange and routed
+nowhere. The broker's counters showed it: **`publish_in 79` vs `publish_out 72`** — seven
+messages in, never out, no error anywhere.
+
+Two things follow. **`publish_in − publish_out` is a monitorable signal** (a persistent gap
+= unroutable messages) and belongs on the Phase 8 dashboard. And it writes itself as a
+**Phase 7 scenario: break a binding, watch the outbox happily report success.** The loud
+version is publisher confirms + the `mandatory` flag, which returns unroutable messages to
+the sender — deliberately not built yet.
+
+**Notification-side decisions still open:** add `bill.payment.*` as a second binding on the
+existing queue (one consumer, one retry path) or declare a separate queue (independent
+backpressure)? And `deliver()` resolves its message text from a **two-way** check on
+`wallet.money.sent` — there are now four routing keys, and a two-way ternary cannot express
+four outcomes. Same shape as `isCustomerFacing()` on the wallet's enum.
 
 **2. Phase 7 — SABOTAGE, September, on the THREE-service system.**
 
