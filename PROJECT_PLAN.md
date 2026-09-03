@@ -5,15 +5,28 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-31 (rev 10 — ledger typed; bill↔wallet on hold/settle; bill outbox writing, relay next)**
+> Last updated: **2026-09-03 (rev 11 — THE BUILD IS DONE. bill→notification verified end to end; Phase 7 sabotage is next)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**IN PROGRESS: bill → notification.** The bill outbox writes events on every resolved
-outcome; **the relay is next** — the bill service has no AMQP wiring at all yet. Then the
-notification-side binding and message text.
+**▶ NEXT: PHASE 7 — SABOTAGE.** The build is complete. Three services, end to end, and
+**one bill payment produces exactly one customer notification.** Nothing is blocking.
+
+**Three scenarios already found by building, not by imagining:**
+1. **Circuit breaker (closes topic #5).** Biller down 5 min. The EOD sweep is **serial** —
+   `fixedDelay` waits for completion and each `inquire` burns the full 2s timeout, so *N*
+   stranded bills cost *N* × 2s per pass and the sweep stops keeping up with its own
+   interval. Predict, watch it burn, then add Resilience4j as the fix the scenario earned.
+2. **The silent drop.** Measured live: `publish_in 79` vs `publish_out 72` — seven messages
+   accepted by the exchange and routed nowhere, no error, and an **outbox reporting
+   success**. Break a binding and watch it. (`publish_in − publish_out` is a Phase 8
+   dashboard metric; the loud fix is publisher confirms + `mandatory`.)
+3. **Stranded bills — two are in the database right now.** A payment whose biller call never
+   landed is **invisible to the sweep**: it inquires, gets `NOT_FOUND`, does nothing,
+   forever. The sweep can only resolve bills the biller knows about. Argues for a
+   "reserved longer than N" alert the sweep cannot itself provide.
 
 **Done since rev 9:** ledger transaction types (V13–V19, `NOT NULL`), `hold`/`settle`
 endpoints with the discharge invariants, bill service switched onto them and reconciling
@@ -1274,6 +1287,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-09-03 | **THE BUILD IS DONE — bill → notification verified end to end.** AMQP wiring, relay job, `bill.payment.*` binding, `NotificationMessage` enum. **One bill payment → exactly one customer notification**, carrying the correlation id of the originating HTTP request; **seven log lines across three JVMs, five threads, a database and a broker, from one grep.** Decisions: one exchange with producer-owned routing-key namespaces (exchange-per-producer would force consumers to enumerate exchanges — more coupling, not less); one queue, two bindings (separate queues rejected as pre-solving head-of-line blocking — earned in Phase 7, not assumed). Message text moved to an enum because four routing keys cannot fit a two-way ternary; the lookup **throws** rather than shipping generic text. **NEXT ACTION → Phase 7 sabotage**, with three scenarios already collected. |
 | 2026-08-31 | **Bill outbox writes.** `V3` table + `V4` cif column; events written transactionally on every resolved outcome; `Failed` writes none (needs manual intervention — a customer cannot act on "we do not know where your money is"). Transaction boundary decided: HTTP **outside**, writes **inside**, on a separate bean because `this.method()` bypasses the proxy. Found a pre-existing cross-service DTO mismatch (`original_entry_id` vs `originalEntryId`) that made every reverse 404 and strand bills — the class of defect mocked tests cannot catch. **Relay next; the bill service has no AMQP wiring yet.** |
 | 2026-08-28 | **Notification ownership decided.** Wallet suppresses the whole hold lifecycle via `TransactionType.isCustomerFacing()`. Rule: *the service that knows why the money moved owns the message.* A bill payment now produces **zero** wallet events, so the customer gets **one** message, from the bill service. |
 | 2026-08-27 | **Bill service speaks hold/settle**, and no longer knows the wallet's account numbering. A 409 now carries the discharge type so the bill reconciles in the same call — `SETTLEMENT → Paid`, `RELEASE → Rejected`. Deferring that conflict to the sweep would have looped forever. New `Failed` status: `Rejected` implies the customer was refunded, which a refused settle does not. |
