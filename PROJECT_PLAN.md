@@ -629,9 +629,28 @@ lesson) → contract to `NOT NULL`.
 
 ◀ **NEXT — the ordered path to Phase 7 (decided 31 Aug, rev 10):**
 
-**1. Finish bill → notification.** ✅ AMQP wiring · ✅ **relay job publishing** —
-⏳ **only the notification side is left**: a binding for the bill routing keys, and message
-text for the two new types. This is the only thing between here and sabotage.
+**1. ~~Finish bill → notification~~ ✅ DONE (3 Sep).** AMQP wiring · relay job ·
+`bill.payment.*` binding · `NotificationMessage` enum for the text.
+
+**Verified end to end:** one bill payment → **exactly one** customer notification, routing
+key `bill.payment.paid`, carrying the correlation id of the originating HTTP request.
+**Seven log lines across three JVMs, five threads, a database and a broker — one grep.**
+The relay's own line is bracketed `bill-relay-…` yet the grep still finds it, because the
+*business* id is in the message text and on the message: the two-ids design working in
+practice.
+
+Message text moved onto an enum because there are now **four** routing keys and a two-way
+ternary cannot express four outcomes — a paid bill would have rendered "you received a
+transaction!", and a rejected one the same. Routing keys contain dots so they cannot be
+constant names; they are a **field**, with a static lookup from wire value to constant that
+**throws** rather than returning a fallback (an unrecognised key means a producer published
+something this service was never updated for — silently shipping generic text to a customer
+is the failure worth avoiding).
+
+⚠️ **Two stranded bills observed, and both are correct.** A payment whose biller call never
+landed is **invisible to the sweep**: it inquires, gets `NOT_FOUND`, and does nothing —
+forever. **The sweep can only resolve bills the biller knows about.** Good Phase 7 material,
+and an argument for a "reserved longer than N" alert that the sweep cannot itself provide.
 
 ⚠️ **Live proof of the silent-drop failure mode (2 Sep).** The bill relay publishes
 correctly, the outbox row reads `sent_at`, and **nothing consumes it** — the queue binds
