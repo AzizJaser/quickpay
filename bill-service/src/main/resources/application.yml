@@ -49,3 +49,4 @@ bill:
   eod-interval-ms: ${BILL_RECONCILIATION_INTERVAL_MS:10000}
   notification-interval-ms: ${BILL_NOTIFICATION_INTERVAL:2000}
   events-exchange: ${BILL_EVENTS_EXCHANGE:quickpay.events}
+  biller-settlement-window-ms: ${BILLER_SETTLEMENT_WINDOW:60000}

@@ -17,12 +17,15 @@ import com.quickpay.bill.repository.BillRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Service
@@ -36,6 +39,9 @@ public class BillService {
     private final BillerClient billerClient;
 
     private final BillOutcomeService billOutcomeService;
+
+    @Value("${bill.biller-settlement-window-ms}")
+    private Long settlementWindow;
 
     private final Logger logger = LoggerFactory.getLogger(BillService.class);
 
@@ -131,7 +137,15 @@ public class BillService {
                 bill.setStatus(BillStatus.Rejected);
                 billOutcomeService.recordOutcome(bill);
             } break;
-            case NOT_FOUND: // nothing
+            case NOT_FOUND: {
+                if(Duration.between(bill.getCreated_at(), LocalDateTime.now()).toMillis() <= settlementWindow){
+                    // nothing, bill is within the settlement window
+                } else {
+                    walletClient.reverse(bill.getEntryId(),"x"+bill.getPaymentId().replace("-",""));
+                    bill.setStatus(BillStatus.Rejected);
+                    billOutcomeService.recordOutcome(bill);
+                }
+            }
                 break;
         }
 
