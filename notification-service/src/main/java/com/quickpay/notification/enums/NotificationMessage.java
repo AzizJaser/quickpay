@@ -10,7 +10,7 @@ public enum NotificationMessage {
     BILL_PAID("bill.payment.paid","your bill has been paid!"),
     BILL_REJECTED("bill.payment.rejected","your bill has been rejected!");
 
-    private final String routingKey;
+    private String routingKey;
     private String message;
 
     NotificationMessage(String routingKey,String message){

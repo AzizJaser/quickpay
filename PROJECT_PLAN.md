@@ -11,6 +11,54 @@
 
 ## ▶ NEXT ACTION (update this line every session)
 
+### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
+
+**The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
+There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
+anywhere in the bill service — a stark contrast with `processed_events`, which has all
+three. `ELEC-972` has been swept every 10s since 27 Aug: roughly **60,000 attempts**, each a
+full HTTP round trip.
+
+**Two failures were being conflated in that sweep, and they need different handling:**
+
+| what happened | evidence | retry? |
+|---|---|---|
+| `inquire` **fails** (biller unreachable) | transient, tells you nothing | yes — this is the circuit-breaker case |
+| `inquire` **succeeds** → `NOT_FOUND` | the biller genuinely has no record | bounded — see below |
+
+**The insight (learner's, and it is the real limit).** `NOT_FOUND` cannot distinguish *"never
+arrived"* from *"arrived, still processing"* — the simulator models exactly this with
+`TIMEOUT` ("sleep past the caller's timeout, then settle PAID — it landed, you didn't hear
+back"). So reverting on the **first** `NOT_FOUND` can refund a customer for a payment the
+biller is about to settle: money destroyed from the platform's side.
+
+But **no threshold fixes it either**: any count or elapsed time is a *bet* that nothing
+arrives afterwards. `inquire` reports the biller's state at an instant, never its future.
+You can shrink the probability; you cannot reach zero. **This is not a flaw in the retry
+logic — it is a missing term in the biller's contract.**
+
+✅ **DECIDED — a settlement window.** What makes reverting safe is **agreement, not
+confidence**. If the biller commits to *"any payment I accept, I settle within N"*, then
+`NOT_FOUND` after N means *void by contract*, and the revert is correct by agreement rather
+than by hope. Real schemes work this way — and **`EODReconciliationJob` is already named
+after a contract that was never defined**: end-of-day reconciliation exists in banking
+*because* the cut-off makes the day's outcome final.
+
+Rejected: **escalate-to-human after N** (safe, but leaves customer money held indefinitely
+and does not scale) and **accept the risk with a generous timeout** (what many real systems
+do, and honest *if you know you are doing it* — but it leaves the late settlement as a
+reconciliation discrepancy).
+
+**Outcome at expiry: revert → `Rejected`.** Not a new terminal state: the money genuinely
+goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
+is — the wallet refused a settle, nobody knows where the money is.
+
+⚠️ **Phase 7 rider:** the contract is a *number both sides agree on*, so sabotage should
+**violate it deliberately** — make the biller settle later than the window and watch the
+late settlement arrive after the revert. That is the discrepancy reconciliation is for.
+
+---
+
 **▶ NEXT: PHASE 7 — SABOTAGE.** The build is complete. Three services, end to end, and
 **one bill payment produces exactly one customer notification.** Nothing is blocking.
 
