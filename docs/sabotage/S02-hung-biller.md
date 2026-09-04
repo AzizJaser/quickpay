@@ -49,50 +49,37 @@ retrying throughout.
 With **5 stranded bills**, how long does one sweep pass take?
 At what number of bills does the sweep stop keeping up with its 10 s interval?
 
-> *(answer)*
+> **10 seconds per pass. Stops being acceptable around 30 bills.** — *guessing*
 
 ### Q2 · Does the settlement window fire this time?
 
-S01 established that the window cannot fire without an *answer* from the biller —
-`resolve` is only called with a `BillerResult`, and a thrown `inquire` never reaches it.
-**Is a read timeout an answer?** Predict whether these bills expire at 60 s, or behave
-like S01 and wait indefinitely.
-
-> *(answer)*
+> **"It will fire and trigger if it receives a timeout."** — *medium*
+>
+> i.e. a read timeout **does** count as an answer, so the bills expire at 60 s.
 
 ### Q3 · What does each side believe? ⭐
 
-`TIMEOUT` settles **PAID** on the biller after sleeping. So the biller's records say the
-payment succeeded, while the bill service never heard.
-
-- What does the **biller** think happened?
-- What does the **bill service** think happened?
-- What happens when the sweep later inquires and the biller answers `PAID`?
-- Is there a window in which the two disagree, and what resolves it?
-
-> *(answer)*
+> **"It will send a request to the wallet to move funds to the biller account."** — *high*
+>
+> i.e. once the sweep inquires and the biller answers `PAID`, the bill service captures.
 
 ### Q4 · Where does the customer's money end up?
 
-Held, refunded, or paid to the biller? And is that the *correct* outcome given what the
-biller believes?
-
-> *(answer)*
+> **Paid — and yes, that is the correct outcome.** — *high*
 
 ### Q5 · Does the golden rule hold?
 
-Can this scenario create or destroy money? If so, by what sequence?
-
-> *(answer)*
+> **Yes.** — *medium*
 
 ### Q6 · Does this earn the circuit breaker?
 
-S01 did not — a refused connection costs ~1 ms. Predict whether the measured cost here is
-large enough to justify Resilience4j, and **what specifically the breaker would protect**.
+> **"I don't know."** — recorded honestly; the run decides.
 
-> *(answer)*
+⚠️ **Tension noted before running:** Q2 predicts the settlement window **reverts** the bills,
+while Q3/Q4 predict the sweep **captures** them. Both cannot happen to the same bill. Either
+one prediction is wrong, or they apply to different bills depending on timing.
 
-**Confidence per question:** *(high / medium / guessing — the guesses are the valuable ones)*
+**Confidence:** Q1 guessing · Q2 medium · Q3 high · Q4 high · Q5 medium · Q6 none.
 
 ---
 
