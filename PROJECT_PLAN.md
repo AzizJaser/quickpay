@@ -651,6 +651,18 @@ notifications resolve it — decide deliberately.
 - **Nobody records the destination bank** for a withdrawal — one generic `Outward Transfer`
   account for all outbound money. Fix is per-bank internal accounts (the credited account
   identifies the bank), not a new column. Parked deliberately.
+- ⚠️ **Orphan holds have nothing to expire them** (found 3 Sep). The settlement-window
+  expiry lives in `BillService.resolve`, so it only ever runs for **bills**. A hold placed
+  directly through `POST /v1/transfer/hold` — a future merchant flow, an ops action, a
+  manual test — sits in suspense **forever**, with no owner and no expiry. There is one in
+  the database right now: `held in suspense: 12`, from a probe, which will never clear.
+  **The generalised risk: the expiry policy lives in the CALLER, so any caller that does
+  not implement one strands customer money.** This is the concrete consequence of the
+  `HOLD`-means-bill risk above. Two candidate fixes, neither built: give the wallet its own
+  sweep for holds older than N with no discharge (the wallet owns the money, so arguably it
+  should own the backstop), or require every hold-creating flow to register an owner that
+  can be asked. **The wallet-side sweep is the safer default — it is a backstop that does
+  not depend on callers behaving.**
 
 **LATE ADDITION — `settles_entry_id` + a discharge invariant.** Found while checking
 whether settlements were traceable: `RELEASE` rows link back via `reverses_entry_id`, but
