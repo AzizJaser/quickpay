@@ -5,7 +5,7 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-03 (rev 11 — THE BUILD IS DONE. bill→notification verified end to end; Phase 7 sabotage is next)**
+> Last updated: **2026-09-04 (rev 12 — PHASE 7 STARTED. S01 run: 4/5 predicted, no fix earned, premise falsified)**
 
 ---
 
@@ -59,8 +59,28 @@ late settlement arrive after the revert. That is the discrepancy reconciliation 
 
 ---
 
-**▶ NEXT: PHASE 7 — SABOTAGE.** The build is complete. Three services, end to end, and
-**one bill payment produces exactly one customer notification.** Nothing is blocking.
+**▶ PHASE 7 IN PROGRESS. Next: S02 — hung biller.**
+
+**S01 (biller down 5 min) run 4 Sep — `docs/sabotage/S01-biller-down.md`.** 4 of 5
+predictions held. Two findings:
+
+1. **A bill cannot expire while the biller is unreachable.** The settlement-window check
+   lives inside `resolve`, which is only called with a `BillerResult` — when `inquire`
+   throws, `resolve` never runs and the window is never consulted. Correct (reverting with
+   no answer is reverting on no evidence) but weaker than assumed: customer money stays
+   held for the whole outage, with nothing told to them.
+2. **🔴 The scenario falsified its own premise.** It was written expecting each call to burn
+   a full 2 s timeout. Measured: **~1 ms** per failed inquire. A stopped process sends TCP
+   RST, so the connection is *refused*; the read timeout only applies once a connection is
+   **accepted**. **A dead dependency is the cheap failure; a hung one is expensive.**
+
+**Consequence: S01 did NOT earn the circuit breaker** — breaking a circuit on a 1 ms failure
+saves nothing measurable. Resilience4j deliberately **not** added. **S02 (hung biller,
+`TIMEOUT` mode with delay ≫ read timeout) is the scenario that would earn it**, and topic #5
+stays open until it does. The earned-fixes rule doing real work: the scenario designed to
+justify a fix turned out not to justify it.
+
+Golden rule held throughout — two independent counts agreed, zero wallet drift.
 
 **Three scenarios already found by building, not by imagining:**
 1. **Circuit breaker (closes topic #5).** Biller down 5 min. The EOD sweep is **serial** —
