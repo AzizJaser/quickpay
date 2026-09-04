@@ -84,8 +84,17 @@ public class BillerStore {
         }
     }
 
-    /** Inquiry by the bill service's reference. A null result here means NOT_FOUND (never settled). */
+    /**
+     * Inquiry by the bill service's reference. A null result here means NOT_FOUND (never settled).
+     *
+     * Applies the SAME artificial latency as pay(). A biller under load is slow on every
+     * endpoint, not just the write path — modelling "slow to pay, instant to look up" left
+     * the reconciliation sweep immune to biller latency, which is not how an overloaded
+     * system behaves. Found in sabotage scenario S02: the sweep could not be stressed at
+     * all, because inquire was a bare map lookup.
+     */
     public PaymentResult inquire(String reference) {
+        sleep(delayMs);
         return settledByReference.get(reference);
     }
 
