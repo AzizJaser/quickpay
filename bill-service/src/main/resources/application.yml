@@ -37,7 +37,10 @@ logging:
   pattern:
     level: "%5p [%X{correlationId:-}]"
   level:
-    org.hibernate.SQL: debug
+    org.hibernate.SQL: warn
+  logback:
+    rollingpolicy:
+      max-history: 60
 
 # Downstream services the bill service calls over HTTP. Wire the RestClient(s) yourself;
 # these are just the base URLs (overridable by env var for docker/CI).

@@ -1,5 +1,5 @@
 server:
-  port: 9092   # wallet=8080, bill=8081, notification=8082, gateway-sim=9090, biller-sim=9091
+  port: 9093  # wallet=8080, bill=8081, notification=8082, gateway-sim=9090, biller-sim=9091
 
 provider:
   # NORMAL-mode behaviour (used when no outcome is forced via POST /simulate/mode).
