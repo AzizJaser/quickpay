@@ -5,7 +5,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -96,6 +98,30 @@ public class BillerStore {
     public PaymentResult inquire(String reference) {
         sleep(delayMs);
         return settledByReference.get(reference);
+    }
+
+    /**
+     * BULK inquiry — the reconciliation shape. One round trip for many references.
+     *
+     * The artificial latency is paid ONCE for the whole batch, not per reference. That is
+     * the entire point: a real scheme reconciles with a settlement file or a bulk status
+     * query, not N polls. Per-reference polling made the sweep's cost scale with the
+     * backlog (measured in S02b: 5 bills x 2 s read timeout = 10 s per pass, growing
+     * linearly). Batched, the cost stops scaling.
+     *
+     * Returns one entry per requested reference, in request order. A reference the biller
+     * has never settled comes back with status NOT_FOUND rather than being omitted, so the
+     * caller can tell "no record" apart from "not in the response".
+     */
+    public List<PaymentResult> inquireAll(List<String> references) {
+        sleep(delayMs);
+        List<PaymentResult> results = new ArrayList<>(references.size());
+        for (String reference : references) {
+            PaymentResult settled = settledByReference.get(reference);
+            results.add(settled != null ? settled : new PaymentResult(
+                    reference, null, "NOT_FOUND", null, "no settlement for this reference"));
+        }
+        return results;
     }
 
     // ---- control panel ----
