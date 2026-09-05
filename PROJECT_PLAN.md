@@ -5,7 +5,7 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-05 (rev 13 — S01/S02/S02b/S03 run. Breaker earned then WITHDRAWN; bulk inquiry removed the cost)**
+> Last updated: **2026-09-05 (rev 14 — five scenarios run. One code fix, one design change, zero protections built)**
 
 ---
 
@@ -59,7 +59,24 @@ late settlement arrive after the revert. That is the discrepancy reconciliation 
 
 ---
 
-**▶ PHASE 7 IN PROGRESS — four scenarios run. Next: S04 (hold outstanding too long).**
+**▶ PHASE 7 IN PROGRESS — five scenarios run. Next: S05 (biller slow but UNDER the timeout).**
+
+⚠️ **Before the next run:** the **biller simulator died mid-S04** and needs restarting. Three
+bills (`S04-001..003`, 42 SAR) are deliberately left `Reserved` as live evidence — they will
+resolve on the first sweep pass once the biller is back, which is itself worth watching.
+
+**S04 (hold outstanding, 5 Sep) — no fix, decision unchanged.** Already recorded on 3 Sep as
+an accepted residual risk and deliberately scoped out; the run **quantified** it rather than
+discovering it: *5 minutes, 3 bills, 42 SAR held, **zero** customer notifications, and one
+operator log line mentioning neither duration nor amount.* An accepted risk with numbers is
+worth more than the same risk in the abstract.
+
+**The settlement-window assumption has now been falsified three times, by three different
+failure modes** — stopped process (S01), read timeout (S02b), 503 (S04). **The window is not
+a timer; it is a condition checked only when the biller ANSWERS.** No answer → `resolve`
+never runs → no window → no refund. And refunding anyway would be wrong: S02 showed
+`TIMEOUT` settling `PAID` *after* the caller gave up, so refunding on an unreachable biller
+destroys money.
 
 **The circuit-breaker arc — the most instructive result so far.** Records in
 `docs/sabotage/`:
