@@ -5,11 +5,93 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-04 (rev 12 — PHASE 7 STARTED. S01 run: 4/5 predicted, no fix earned, premise falsified)**
+> Last updated: **2026-09-05 (rev 13 — S01/S02/S02b/S03 run. Breaker earned then WITHDRAWN; bulk inquiry removed the cost)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
+
+### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
+
+**The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
+There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
+anywhere in the bill service — a stark contrast with `processed_events`, which has all
+three. `ELEC-972` has been swept every 10s since 27 Aug: roughly **60,000 attempts**, each a
+full HTTP round trip.
+
+**Two failures were being conflated in that sweep, and they need different handling:**
+
+| what happened | evidence | retry? |
+|---|---|---|
+| `inquire` **fails** (biller unreachable) | transient, tells you nothing | yes — this is the circuit-breaker case |
+| `inquire` **succeeds** → `NOT_FOUND` | the biller genuinely has no record | bounded — see below |
+
+**The insight (learner's, and it is the real limit).** `NOT_FOUND` cannot distinguish *"never
+arrived"* from *"arrived, still processing"* — the simulator models exactly this with
+`TIMEOUT` ("sleep past the caller's timeout, then settle PAID — it landed, you didn't hear
+back"). So reverting on the **first** `NOT_FOUND` can refund a customer for a payment the
+biller is about to settle: money destroyed from the platform's side.
+
+But **no threshold fixes it either**: any count or elapsed time is a *bet* that nothing
+arrives afterwards. `inquire` reports the biller's state at an instant, never its future.
+You can shrink the probability; you cannot reach zero. **This is not a flaw in the retry
+logic — it is a missing term in the biller's contract.**
+
+✅ **DECIDED — a settlement window.** What makes reverting safe is **agreement, not
+confidence**. If the biller commits to *"any payment I accept, I settle within N"*, then
+`NOT_FOUND` after N means *void by contract*, and the revert is correct by agreement rather
+than by hope. Real schemes work this way — and **`EODReconciliationJob` is already named
+after a contract that was never defined**: end-of-day reconciliation exists in banking
+*because* the cut-off makes the day's outcome final.
+
+Rejected: **escalate-to-human after N** (safe, but leaves customer money held indefinitely
+and does not scale) and **accept the risk with a generous timeout** (what many real systems
+do, and honest *if you know you are doing it* — but it leaves the late settlement as a
+reconciliation discrepancy).
+
+**Outcome at expiry: revert → `Rejected`.** Not a new terminal state: the money genuinely
+goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
+is — the wallet refused a settle, nobody knows where the money is.
+
+⚠️ **Phase 7 rider:** the contract is a *number both sides agree on*, so sabotage should
+**violate it deliberately** — make the biller settle later than the window and watch the
+late settlement arrive after the revert. That is the discrepancy reconciliation is for.
+
+---
+
+**▶ PHASE 7 IN PROGRESS — four scenarios run. Next: S04 (hold outstanding too long).**
+
+**The circuit-breaker arc — the most instructive result so far.** Records in
+`docs/sabotage/`:
+
+| | result |
+|---|---|
+| **S01** biller stopped | breaker **not earned** — a dead process refuses connections in **~1 ms**; the read timeout only applies once a connection is *accepted*. A dead dependency is the *cheap* failure |
+| **S02** hung `pay` | scenario **could not test** it — `inquire()` was a bare map lookup, so the sweep was immune to biller latency. Found a real bug instead (see below) |
+| **S02b** slow on both paths | breaker **EARNED** — measured 5 × 2 s = **10 s per pass**, linear in the backlog, and **166 calls** fired at a biller already too slow to answer |
+| **S03** bulk inquiry | **verdict WITHDRAWN** — one call per pass regardless of backlog. ~2 s per pass, flat. The 166 calls would have been ~28 |
+
+⚠️ **THE LESSON: before adding a mechanism to MANAGE a cost, ask whether the cost can be
+REMOVED.** A circuit breaker manages the cost of calling a failing dependency; batching
+removed ~80% of it by making the call count independent of the backlog. **Had the breaker
+been built after S02b it would have been guarding a problem a design change was about to
+eliminate — and it would have looked like it was working.** Topic #5 stays open; the breaker
+is deliberately not built.
+
+**Other findings, confirmed by two independent failure modes:**
+- **A bill cannot expire while the biller is unreachable OR unresponsive.** The
+  settlement-window check lives inside `resolve`, and `resolve` is only called with a
+  `BillerResult` — a throwing `inquire` never reaches it. Correct (reverting with no answer
+  is reverting on no evidence) but it means customer money is held for the whole outage with
+  nothing told to them. **That is S04.**
+- **The golden rule was never at risk in any scenario.** Two independent counts agreed every
+  time. Correctness comes from database constraints, not from timing — which is why a
+  circuit breaker cannot protect it and does not need to.
+- **`RestClientException` escaped hand-written catch lists — three times.** A read timeout
+  firing while the body is read is neither `HttpServerErrorException` nor
+  `ResourceAccessException`. Fixed in the sweep and `payBiller` by catching the parent
+  **last**. Note it escaped `sweep()` entirely, so it logged with an **empty correlation
+  bracket** — `finally { MDC.remove() }` had already run.
 
 ### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
 
