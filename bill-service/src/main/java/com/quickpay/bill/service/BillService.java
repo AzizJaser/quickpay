@@ -23,6 +23,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -110,6 +111,9 @@ public class BillService {
             // nothing EOD job will reconcile
         } catch (ResourceAccessException e){
             logger.error("timeout / unable to connect to biller gateway, Payment ID {}",paymentId);
+        } catch (RestClientException e){
+            logger.error("biller call failed unexpectedly — {} bill unresolved",paymentId);
+            return;
         }
     }
 

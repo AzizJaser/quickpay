@@ -2,11 +2,13 @@ package com.quickpay.bill.client;
 
 import com.quickpay.bill.dto.request.BillerPayRequest;
 import com.quickpay.bill.dto.response.BillerResult;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
+import java.util.List;
 
 @Component
 public class BillerClient {
@@ -42,5 +44,15 @@ public class BillerClient {
                 }))
                 .body(BillerResult.class);
 
+    }
+
+    public List<BillerResult> inquiries(List<String> bills){
+        return billerClient
+                .post()
+                .uri("/biller/v1/payments/inquiries")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(bills)
+                .retrieve()
+                .body(new ParameterizedTypeReference<List<BillerResult>>() {});
     }
 }
