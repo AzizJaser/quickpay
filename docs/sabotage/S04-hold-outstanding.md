@@ -67,9 +67,17 @@ T+300s   Reserved x3   held=54                        notifications=88 (+0)
 That log line says **nothing about how long, and nothing about how much money**.
 
 ⚠️ **Run hygiene:** the biller simulator died partway through, so the "biller recovers" half
-of the scenario did not execute. The five-minute observation above is unaffected — that is
-precisely the condition being tested — but recovery was not measured here (it was in S01
-and S02b).
+did not execute on the day. The five-minute observation above is unaffected — that is
+precisely the condition being tested.
+
+✅ **Recovery captured the next morning (6 Sep), after ~18 hours stranded.** The biller was
+restarted and **all three bills reverted on the FIRST sweep pass**, within 8 seconds: held
+54 → 12, 42 SAR returned to the customer, three `bill.payment.rejected` notifications sent.
+
+**This is the cleanest confirmation of the mechanism yet: the settlement window does not
+decay, expire, or degrade with time — it fires the instant an answer arrives.** An 18-hour
+outage and a 60-second one behave identically. The window is a *condition*, and waiting
+longer does not change it; only an answer does.
 
 ---
 
