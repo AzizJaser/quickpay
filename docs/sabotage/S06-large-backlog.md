@@ -52,13 +52,64 @@ and it reappears in another.
 
 ## 3 · What actually happened
 
-*(pending)*
+200 bills stranded in 1.38 s (10:22:14.81 → 10:22:16.19), 200 SAR held. All 200 resolved.
+
+```
+pass 1:   93 bills in 0.73 s
+gap:      10.04 s            <- fixedDelay between passes
+pass 2:  107 bills in 0.70 s
+
+~7.6 ms per bill.  Bulk request carried all references in ONE body — no limit hit.
+200 of 200 correctly joined.  Zero sweep errors.
+```
+
+*(The 200 ERROR lines in the log are the original `pay` calls receiving 5xx — the mechanism
+used to strand the bills, not sweep failures.)*
 
 ---
 
 ## 4 · Prediction vs reality
 
-*(pending)*
+| # | Predicted | Actual | |
+|---|---|---|---|
+| 1 | the bulk request will **not** succeed at 200 refs | **✗** — succeeded, ~8 KB body, no limit reached | ✗ |
+| 2 | ~5 s per pass | **✗ 0.73 s** — 7× faster than predicted | ✗ |
+| 3 | nothing happens to the relay | **✓** — relay ran at 10:23:15.7, between passes, unblocked | ✓ |
+| 4 | response not necessarily intact | **✗** — 200 of 200, all correctly joined | ✗ |
+| 5 | a cap is needed | **unresolved — the run gave no evidence for one.** See §6 | ~ |
+
+### 🔴 SURPRISE — the eligibility boundary MOVES during a pass
+
+The split into 93 + 107 was not a batch limit and not the settlement window at pass start.
+It is subtler:
+
+```
+eligible at pass START (created < 10:22:14.968):   40
+eligible at pass END   (created < 10:22:15.700):  120
+actually reverted:                                 93   <- between the two
+```
+
+`resolve` evaluates `LocalDateTime.now()` **per bill**, so as the sweep works through the
+results the 60-second cutoff **slides forward with it**. Bills that were not eligible when
+the pass began became eligible by the time the loop reached them. With 200 bills created in
+1.38 s, that sliding boundary swept up ~53 extra bills mid-pass.
+
+**And which bills is arbitrary.** `findByStatus(Reserved)` has no `ORDER BY`, so results
+return in whatever order Postgres gives them. Two bills created 1 ms apart can land in
+different passes purely on iteration order.
+
+Not a correctness problem — every bill reverted, the golden rule held, and the stragglers
+were caught 10 s later. But **the split is non-deterministic**, which matters when trying to
+reason about a sweep's behaviour from its output. The notification retry job avoids this by
+ordering explicitly (`...OrderByCreatedAtAsc`); the bill sweep does not.
+
+### Why prediction 2 was 7× out — and why my own first figure was wrong too
+
+The cost model given before the run was right in shape but wrong in magnitude: a `resolve`
+costs ~7.6 ms, not the ~25 ms assumed. **I also mis-measured it initially at 57.7 ms** by
+dividing 200 bills across the full 11.47 s span — which included the 10 s idle gap between
+passes. Dividing by elapsed wall-clock rather than by working time is an easy way to
+overstate a per-item cost by an order of magnitude.
 
 ---
 
@@ -66,24 +117,59 @@ and it reappears in another.
 
 | check | before | after | agree? |
 |---|---|---|---|
-| held in suspense | 12 | | |
-| suspense balance | 12 | | |
-| wallet 005100000001 | 1870 | | |
+| held in suspense (identity) | 12 | 12 | ✓ |
+| suspense account balance | 12 | 12 | ✓ |
+| wallet 005100000001 | 1870 | 1870 | ✓ (200 held then fully returned) |
+
+200 SAR held and returned in full, two independent counts agreeing.
 
 ---
 
 ## 6 · What I would fix, and whether I fixed it
 
-*(pending)*
+**NOTHING FIXED — and prediction 5's cap now has no evidence behind it.**
+
+The unbounded `findByStatus(Reserved)` was flagged in S05 as a gap. **This run failed to
+demonstrate it is a problem**: 200 references travelled in one body without hitting any
+limit, the pass took 0.73 s, and the relay was unaffected. **A cap remains a reasonable
+instinct with no measurement supporting it** — the same position the circuit breaker was in
+after S01, and the honest thing is to say so rather than build it.
+
+Where it *would* start to matter, for a future run: default Tomcat `maxHttpFormPostSize`
+(2 MB) is ~50,000 UUIDs away; the pass duration grows linearly at ~7.6 ms/bill, so 10,000
+stranded bills would be a 76 s pass — long enough to starve the relay properly and worth
+testing before assuming.
+
+**Better supported by this run: an explicit `ORDER BY` on the sweep query.** Not for
+performance, but so the sweep's behaviour is deterministic and reproducible. Costs nothing,
+and the notification retry job already does it. Still not fixed — recorded as a candidate.
+
+**Prediction 5's other half — "the sweep should run on its own thread" — is untested here.**
+The relay was unaffected at 0.73 s. It would matter at a much larger backlog, which is the
+scenario above.
 
 ---
 
 ## 7 · Follow-on scenarios
 
-*(pending)*
+- **S07 — 10,000 stranded bills.** Where the linear resolve cost genuinely bites, and the
+  first scenario that could earn both the cap and the separate thread.
+- **S08 — break a binding.** The measured `publish_in` vs `publish_out` gap.
+- **S09 — late settlement.** Violate the settlement window deliberately.
 
 ---
 
 ## 8 · Log evidence
 
-*(pending)*
+```
+pass boundaries, from RELEASE row timestamps:
+  10:23:14.968  first release   ┐ pass 1: 93 bills
+  10:23:15.700  last release    ┘ 0.73 s
+  10:23:25.741  next release    <- 10.04 s gap = fixedDelay
+  10:23:26.442  last release      pass 2: 107 bills, 0.70 s
+
+relay ran BETWEEN passes, unblocked:
+  10:23:15.708 [scheduling-1] NotificationPublisherJob
+
+200 ERROR lines = the original pay() 5xx used to strand the bills, not sweep failures.
+```
