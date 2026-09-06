@@ -52,13 +52,53 @@ broken**, so this is the first prediction of an outright failure.
 The sweep reverted 202 mid-submission as their windows closed, leaving 9,798.
 
 ```
-pass 1:  2,500 bills in 46.91s  (18.8 ms/bill)   <- competing with submission load
-pass 2:  7,405 bills in 38.19s  ( 5.2 ms/bill)
+pass 1:  2,500 bills in 46.91s  (18.8 ms/bill)   <- CONTAMINATED, see below
+pass 2:  7,405 bills in 38.19s  ( 5.2 ms/bill)   <- the clean figure
 pass 3:     95 bills in  0.56s  ( 6.0 ms/bill)
 
 10,000 RELEASE rows written.  Sweep errors: 0.  Escaped exceptions: 0.
 Request body ~381 KB of UUIDs — no limit hit, no rejection, no reset.
 ```
+
+### ⚠️ MEASUREMENT ARTEFACTS — both pass boundaries and pass-1 cost are my setup, not the system
+
+*Questioned by the learner: the gap between passes and the bill counts looked wrong. They
+were — and chasing it explained both.*
+
+**The bill counts come from an accidental pause in submission:**
+
+```
+tranche 1:  17:46:21.5 -> 17:46:37.1   2,500 bills
+   gap:     17:46:37   -> 17:47:11     34 s — a query run between two commands
+tranche 2:  17:47:11   -> 17:47:55.7   7,500 bills
+```
+
+Applying S06's moving eligibility boundary:
+
+```
+pass 1 (17:47:21.9 -> 17:48:08.8): eligibility slid "before 17:46:21.9" -> "before 17:47:08.8"
+        that range covers ALL of tranche 1 and NONE of tranche 2      = exactly 2,500
+pass 2 (17:48:18.9 -> 17:48:57.1): slid "before 17:47:18.9" -> "before 17:47:57.1"
+        covers tranche 2, which ended 17:47:55.7                      = 7,405 (+95 in pass 3)
+```
+
+`2,500 + 7,405 + 95 = 10,000`. **The 34-second pause carved the passes**, not any batching
+or limit in the system. It is also a second, independent confirmation of S06's finding.
+
+**And pass 1's 18.8 ms/bill is contention from the same mistake:**
+
+```
+pass 1 ran   17:47:21.9 -> 17:48:08.8
+submission ran until 17:47:55.7
+overlap:     33.8 s of pass 1's 46.9 s  = 72%
+```
+
+Pass 1 spent nearly three-quarters of its time competing with 7,500 concurrent submissions,
+each doing its own wallet HTTP call and DB write. **Pass 2 had no overlap.**
+
+**Therefore: 5.2 ms/bill is the figure to quote.** 18.8 ms is "the same work under heavy
+concurrent write load" — interesting in its own right (a 3.6× degradation), but not the
+sweep's cost.
 
 ### 🔴 THE RELAY WAS STOPPED FOR 39.3 SECONDS
 
@@ -82,7 +122,7 @@ because `EODReconciliationJob` and `NotificationPublisherJob` share Spring Boot'
 | # | Predicted | Actual | |
 |---|---|---|---|
 | 1 | **it will break** | **✗ nothing broke** — 381 KB body accepted, 10,000 resolved, zero errors | ✗ |
-| 2 | 76 s per pass | **~partial** — 46.9 s and 38.2 s across two large passes; a single 10,000 pass would be ~52 s at the measured 5.2 ms/bill. Right order, high by ~50% | ~ |
+| 2 | 76 s per pass | **~partial** — a single clean 10,000-bill pass would be **~52 s** at the corrected 5.2 ms/bill. Right order of magnitude, high by ~45% | ~ |
 | 3 | the relay will be very slow | **✓ and worse — it STOPPED for 39.3 s** | ✓ |
 | 4 | not one pass, because it breaks | **✗ right conclusion, wrong reason** — three passes, caused by the moving eligibility boundary (S06), not failure | ✗ |
 | 5 | the golden rule holds | **✓** — identity 12 = suspense 12, wallet 16,870, **zero drift** across 10,000 concurrent holds | ✓ |
