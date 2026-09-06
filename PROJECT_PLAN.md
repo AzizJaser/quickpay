@@ -5,11 +5,103 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-05 (rev 14 — five scenarios run. One code fix, one design change, zero protections built)**
+> Last updated: **2026-09-06 (rev 15 — seven scenario-runs. Still zero protections built; topic #5 reframed as instrumentation)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
+
+### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
+
+**The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
+There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
+anywhere in the bill service — a stark contrast with `processed_events`, which has all
+three. `ELEC-972` has been swept every 10s since 27 Aug: roughly **60,000 attempts**, each a
+full HTTP round trip.
+
+**Two failures were being conflated in that sweep, and they need different handling:**
+
+| what happened | evidence | retry? |
+|---|---|---|
+| `inquire` **fails** (biller unreachable) | transient, tells you nothing | yes — this is the circuit-breaker case |
+| `inquire` **succeeds** → `NOT_FOUND` | the biller genuinely has no record | bounded — see below |
+
+**The insight (learner's, and it is the real limit).** `NOT_FOUND` cannot distinguish *"never
+arrived"* from *"arrived, still processing"* — the simulator models exactly this with
+`TIMEOUT` ("sleep past the caller's timeout, then settle PAID — it landed, you didn't hear
+back"). So reverting on the **first** `NOT_FOUND` can refund a customer for a payment the
+biller is about to settle: money destroyed from the platform's side.
+
+But **no threshold fixes it either**: any count or elapsed time is a *bet* that nothing
+arrives afterwards. `inquire` reports the biller's state at an instant, never its future.
+You can shrink the probability; you cannot reach zero. **This is not a flaw in the retry
+logic — it is a missing term in the biller's contract.**
+
+✅ **DECIDED — a settlement window.** What makes reverting safe is **agreement, not
+confidence**. If the biller commits to *"any payment I accept, I settle within N"*, then
+`NOT_FOUND` after N means *void by contract*, and the revert is correct by agreement rather
+than by hope. Real schemes work this way — and **`EODReconciliationJob` is already named
+after a contract that was never defined**: end-of-day reconciliation exists in banking
+*because* the cut-off makes the day's outcome final.
+
+Rejected: **escalate-to-human after N** (safe, but leaves customer money held indefinitely
+and does not scale) and **accept the risk with a generous timeout** (what many real systems
+do, and honest *if you know you are doing it* — but it leaves the late settlement as a
+reconciliation discrepancy).
+
+**Outcome at expiry: revert → `Rejected`.** Not a new terminal state: the money genuinely
+goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
+is — the wallet refused a settle, nobody knows where the money is.
+
+⚠️ **Phase 7 rider:** the contract is a *number both sides agree on*, so sabotage should
+**violate it deliberately** — make the biller settle later than the window and watch the
+late settlement arrive after the revert. That is the discrepancy reconciliation is for.
+
+---
+
+**▶ PHASE 7 IN PROGRESS — S01–S06 run. Next: S07 (10,000-bill backlog).**
+
+⚠️ **State is clean:** 0 `Reserved` bills · held 12 = suspense 12 (the known orphan) ·
+wallet `005100000001` = 1870. Nothing half-finished.
+
+**Scorecard: one code fix, one design change, ZERO protections built.** Every protection was
+either unearned, made redundant, or unsupported by measurement. Full records in
+`docs/sabotage/`.
+
+| | result |
+|---|---|
+| **S01** biller stopped | breaker unearned — connection-refused costs **~1 ms** |
+| **S02** hung `pay` | untestable (`inquire` was a bare map lookup) — found `RestClientException` escaping the catch lists |
+| **S02b** slow both paths | breaker **EARNED**: 10 s/pass, 166 calls at a failing biller |
+| **S03** bulk inquiry | **verdict WITHDRAWN** — batching cut it to ~2 s/pass, flat in backlog |
+| **S04** hold outstanding | no fix — **quantified** an already-accepted risk (5 min, 42 SAR, 0 notifications). Recovery after **18 h** stranded: reverted on the first pass in 8 s |
+| **S05** slow UNDER the timeout | **slow-but-working is INVISIBLE** — a 300× slowdown produces byte-identical logs |
+| **S06** 200-bill backlog | suspected cap has **no evidence** — 200 refs in one body, 0.73 s/pass, relay unaffected |
+
+⚠️ **THE LESSON, twice over: before adding a mechanism to MANAGE a cost, ask whether the cost
+can be REMOVED** (S03), **and don't build a protection a measurement has not earned** (S01,
+S06). Had the breaker been built after S02b it would have guarded a problem a design change
+was about to eliminate — **and it would have looked like it was working.**
+
+**Topic #5 is REFRAMED, not just open.** A failure-count breaker is blind to the failure
+mode that produces no failures (S05). What the evidence actually argues for is
+**instrumentation**: latency metrics on the biller client (Micrometer, topic #11), or
+Resilience4j's **slow-call** threshold — a different configuration from the one S02b argued
+for.
+
+**Findings confirmed across scenarios:**
+- **The settlement window is not a timer — it is a condition checked only when the biller
+  ANSWERS.** Falsified as a timer three times, by three failure modes (stopped process, read
+  timeout, 503). No answer → `resolve` never runs → no window → no refund. And refunding
+  anyway would destroy money: S02 showed `TIMEOUT` settling `PAID` *after* the caller gave up.
+- **The eligibility boundary MOVES during a sweep pass** (S06). `resolve` evaluates `now()`
+  per bill, so the cutoff slides forward mid-pass — 53 extra bills swept up. And **which**
+  bills is arbitrary: `findByStatus(Reserved)` has no `ORDER BY`. The notification retry job
+  orders explicitly; the bill sweep does not. **An `ORDER BY` is the one change this run
+  actually supports** — costs nothing, makes behaviour reproducible. Not built.
+- **The golden rule held in every scenario**, verified two independent ways each time.
+  Correctness comes from database constraints, not from timing — which is why no amount of
+  latency or failure has ever threatened it.
 
 ### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
 
