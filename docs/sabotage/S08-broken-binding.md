@@ -171,6 +171,32 @@ one is different from the circuit breaker: **the harm is measured, reproducible,
 currently undetectable.** The breaker had no measured harm; this has 7 (or 10) lost customer
 notifications sitting in production data.
 
+✅ **DECIDED (7 Sep): implement `mandatory` AFTER Phase 7 completes.** Phase 7 is a discovery
+pass; building the fix now would turn it into a build phase and delay the remaining
+scenarios. The finding is recorded, reproducible on demand, and S08b is queued to prove the
+fix when it lands.
+
+⚠️ **Design note captured while scoping it — the fix is NOT "don't mark `sent_at`".**
+`mandatory` returns are **asynchronous**: `convertAndSend` returns immediately and the
+returns callback fires later, by which time `sent_at` is already committed. So the fix must
+**unmark** it:
+
+1. `rabbitTemplate.setMandatory(true)`
+2. a **returns callback** receiving the returned message — which carries the `messageId` the
+   relay set (the outbox `event_id`)
+3. the callback looks the event up and sets `sent_at` back to null, so the next relay pass
+   republishes
+
+Setting `message_id` on every message now pays off twice: consumer dedup key **and** the only
+way a returned message identifies itself.
+
+⚠️ **Open question to settle BEFORE building it:** the callback fires on a broker I/O thread,
+outside the relay's thread and outside any transaction — so its DB write stands alone. And
+if the republish also fails, the event bounces between sent and unsent **forever**, with no
+attempt counter. That is the unbounded-retry shape this project has now hit three times
+(notification retries, the EOD sweep, and here). **Decide the bound before writing the
+code.**
+
 ---
 
 ## 7 · Follow-on scenarios
