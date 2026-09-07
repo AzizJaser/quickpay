@@ -28,6 +28,10 @@ spring:
     username: ${RABBITMQ_USER:quickpay}
     password: ${RABBITMQ_PASS:quickpay}
 
+  task:
+    scheduling:
+      pool:
+        size: 2
 server:
   port: 8081   # wallet=8080, gateway-sim=9090, biller-sim=9091, bill-service=8081
 
