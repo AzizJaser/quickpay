@@ -209,6 +209,30 @@ here: it is the *only* identifier available.
 
 **Still lost, still marked sent.** Detection only.
 
+✅ **Applied to the WALLET relay too (8 Sep), and verified the same way.** The wallet
+publishes `wallet.money.sent` / `.received` for **every** customer-facing transfer — top-ups,
+withdrawals, P2P — so a binding break there is higher-volume and faster-noticed than the
+bill service's two terminal event types.
+
+Predicted: *"2 unroutable lines, transfer will succeed."* Both correct — a P2P has two
+customer legs, so it publishes two events:
+
+```
+transfer:            200
+UNROUTABLE lines:      2   (one per leg, each naming its event_id)
+broker unroutable:  14 -> 16
+```
+
+⚠️ **A near-miss worth recording: the first attempt produced NO log lines.** The config was
+on disk but the wallet had not been restarted, so `mandatory` was off in the running process.
+The broker counters still moved 12 → 14, proving two messages *were* destroyed — silently.
+**The verification accidentally reproduced the exact bug it was verifying.** Two lessons in
+one: config is inert until restart, and *"nothing was logged"* is not evidence that nothing
+was lost.
+
+**After restoring both bindings:** a fresh P2P delivered its 2 notifications normally, and
+the golden rule held — identity 12 = suspense 12, zero drift.
+
 ✅ **DECIDED (7 Sep): the RECOVERY half waits until after Phase 7.** Phase 7 is a discovery
 pass; building the fix now would turn it into a build phase and delay the remaining
 scenarios. The finding is recorded, reproducible on demand, and S08b is queued to prove the
