@@ -11,7 +11,34 @@
 
 ## ▶ NEXT ACTION (update this line every session)
 
-### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
+### 🔨 IN PROGRESS — Phase 7 sabotage, 11 of ~12 scenarios run (paused 8 Sep)
+
+**Pick one to resume:**
+
+| option | what it is | needs |
+|---|---|---|
+| **S11b** | explicit `EXPIRED` instead of the biller lying with `NOT_FOUND`. ⚠️ Ship the biller first and the bill service cannot deserialize the new enum value — the whole bulk inquiry throws and **every** bill in that pass stays `Reserved`. **A contract change has a rollout order** — the cross-service cousin of expand-contract | `BillerStatus.EXPIRED` + a `resolve` branch — **your code** |
+| **S11c** | the knife edge: a settlement landing *between* the two windows. The only run that can test S11a's untested Q2, and the one that earns `expiresAt` in the pay request | scaffolding only |
+| **duplicate · kill mid-saga · flood** | three untouched categories | scaffolding only |
+
+**Decisions waiting, in priority order** (all measured, none built — Phase 7 is measurement):
+
+1. 🔴 **The retry budget must be a duration, not a count** (S10). `maximum-retries: 5` ×
+   `resend-interval-ms: 5000` = **25 seconds** before a notification is destroyed permanently.
+   ⚠️ **Do not fix the `attempts` increment first** — that converts an unbounded retry into
+   *guaranteed* loss in 25 s. **Budget before counter.**
+2. 🟢 **End-to-end reconciliation is EARNED** (S10) and needs **two** queries — *missing row*
+   (set difference on `message_id` = `event_id`, no new schema) and *terminal `FAILED` row*.
+   Neither sees the other. With a **start boundary**, or it reports noise as findings.
+3. 🟡 **`expiresAt` in the pay request** (S11a). The settlement window agrees a number but not
+   the **anchor** or **whose clock** — the bill service measures from `bill.created_at`, the
+   biller from request arrival. One clock, one anchor, nothing to keep in sync.
+4. **`mandatory` recovery half** (S08) — unmark `sent_at` so the relay retries. Returns are
+   asynchronous and the callback runs outside any transaction. **Decide the retry bound first.**
+
+---
+
+### ✅ CLOSED — bounding the sweep (decided 3 Sep, landed)
 
 **The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
 There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
