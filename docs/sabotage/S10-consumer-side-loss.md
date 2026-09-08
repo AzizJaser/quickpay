@@ -84,6 +84,24 @@ the record:
 > `event.setAttempts(event.getAttempts() + 1)` sits in `deliver()` relative to the provider
 > call that can throw.
 
+### Arm B — learner's prediction, verbatim (locked before the run)
+
+| Q | Prediction | Confidence |
+|---|---|---|
+| Q4 | *"it will be saved, it will resend, if the provider was up"* — i.e. a `processed_events` row IS created, the resend job picks it up, and the customer gets the message once the provider returns | **high** |
+| Q5 | *"attempt will not pass 5"* | **high** |
+| Q6 | *"golden rule will stay"* | **medium** |
+
+**Confirmed from the code before running** (so the run tests behaviour, not syntax):
+`NotificationProviderClient` has **no try/catch and no `onStatus` handler for 5xx or
+connection failures** — only a 422 handler. A stopped provider therefore raises
+`ResourceAccessException` out of `smsProvider(...)`, straight through `deliver()`.
+
+⚠️ **The crux of Q5, stated before the run:** `event.setAttempts(event.getAttempts() + 1)`
+is the *third-from-last* line of `deliver()`, **after** both provider calls. If the provider
+call throws, that line is never reached. Q5 asks whether "will not pass 5" is true because
+the cap engages — or true for a reason that makes the cap meaningless.
+
 ---
 
 ## 3 · What actually happened — ARM A
