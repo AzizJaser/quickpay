@@ -88,7 +88,11 @@ still lost** — see `docs/sabotage/S09-late-settlement.md`.
 
 ---
 
-**▶ PHASE 7 IN PROGRESS — S01–S06 run. Next: S07 (10,000-bill backlog).**
+**⚠️ SUPERSEDED SNAPSHOT (as of S06). The current Phase 7 status is the block further down —
+search `11 of ~12`.** Kept only because deleting it would lose the reasoning below; almost all
+of it is duplicated verbatim in the current block. **Safe to prune.**
+
+**▶ PHASE 7 — S01–S06 run at the time of writing. Next was: S07 (10,000-bill backlog).**
 
 ⚠️ **State is clean:** 0 `Reserved` bills · held 12 = suspense 12 (the known orphan) ·
 wallet `005100000001` = 1870. Nothing half-finished.
@@ -182,7 +186,11 @@ still lost** — see `docs/sabotage/S09-late-settlement.md`.
 
 ---
 
-**▶ PHASE 7 IN PROGRESS — five scenarios run. Next: S05 (biller slow but UNDER the timeout).**
+**⚠️ SUPERSEDED SNAPSHOT (as of S04). The current Phase 7 status is the block further down —
+search `11 of ~12`.** Kept because it holds ~35 lines of S01–S06 analysis found nowhere else
+(the circuit-breaker arc, the `ORDER BY` argument, the two-independent-counts note).
+
+**▶ PHASE 7 — five scenarios run at the time of writing. Next was: S05 (biller slow but UNDER the timeout).**
 
 ⚠️ **Before the next run:** the **biller simulator died mid-S04** and needs restarting. Three
 bills (`S04-001..003`, 42 SAR) are deliberately left `Reserved` as live evidence — they will
