@@ -27,6 +27,10 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USER:quickpay}
     password: ${RABBITMQ_PASS:quickpay}
+    publisher-returns: true
+    publisher-confirm-type: correlated
+    template:
+      mandatory: true
 
   task:
     scheduling:

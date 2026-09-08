@@ -171,7 +171,45 @@ one is different from the circuit breaker: **the harm is measured, reproducible,
 currently undetectable.** The breaker had no measured harm; this has 7 (or 10) lost customer
 notifications sitting in production data.
 
-✅ **DECIDED (7 Sep): implement `mandatory` AFTER Phase 7 completes.** Phase 7 is a discovery
+✅ **PARTIALLY BUILT (8 Sep) — detection now, recovery after Phase 7.**
+
+The split: `mandatory` + a returns callback that **logs** was built immediately, because it
+turns a silent loss into a loud one at no design cost. The *recovery* half — unmarking
+`sent_at` so the relay retries — waits, because that is where the unbounded-retry question
+lives.
+
+**Config** (`bill-service`): `publisher-returns: true` · `publisher-confirm-type: correlated`
+· `template.mandatory: true`. ⚠️ The property is **`publisher-returns`** (plural) — the
+singular spelling is silently ignored by Spring Boot, which would have left returns disabled
+and the callback never firing. *The exact failure mode this scenario is about, nearly
+reproduced while fixing it.*
+
+**Verified by re-running the sabotage** — binding deleted, two bill payments:
+
+```
+S08  (before):  0 log lines.  Silent.
+S08b (after):
+  08:30:23.010 ERROR [] [rabbitConnectionFactory2] QueueCallBack :
+      UNROUTABLE - event 6efd188b-35e6-4b72-... to exchange quickpay.events ...
+  08:30:23.015 ERROR [] [rabbitConnectionFactory1] QueueCallBack :
+      UNROUTABLE - event 104e25ea-38cc-428b-... ...
+```
+
+**And the id is usable** — straight from the log to the affected customer:
+
+```
+log:  UNROUTABLE - event 104e25ea-38cc-428b-a41d-821a8fcaf302
+row:  104e25ea | bill.payment.paid | marked_sent = t | S08B-002
+```
+
+Two details worth noting, both predicted: the correlation bracket is **empty `[]`** and the
+thread is **`rabbitConnectionFactory2`**, not the relay's `scheduling-*` — the callback runs
+on a broker I/O thread with no MDC. That is why logging the `messageId` matters so much
+here: it is the *only* identifier available.
+
+**Still lost, still marked sent.** Detection only.
+
+✅ **DECIDED (7 Sep): the RECOVERY half waits until after Phase 7.** Phase 7 is a discovery
 pass; building the fix now would turn it into a build phase and delay the remaining
 scenarios. The finding is recorded, reproducible on demand, and S08b is queued to prove the
 fix when it lands.
