@@ -1,5 +1,7 @@
 package com.quickpay.billersim;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -36,12 +38,35 @@ public class BillerStore {
     private volatile long delayMs;
     private final long timeoutSleepMs;
 
+    /**
+     * THE OTHER HALF OF THE SETTLEMENT-WINDOW CONTRACT (added for sabotage scenario S11).
+     *
+     * S09 proved the window was never actually an agreement: `biller-settlement-window-ms`
+     * lived only in the bill service's config, so this simulator settled PAID 30 s after the
+     * platform had already reverted and refunded the customer. Every view was internally
+     * consistent and the contradiction existed only between the two systems — a unilateral
+     * timeout wearing a contract's clothes.
+     *
+     * This is that number, known to the biller too. Past it, the biller REFUSES to settle.
+     *
+     * ⚠️ The two sides start their clocks at different moments: the bill service measures
+     * from `bill.created_at`, this simulator from the instant the pay request arrived —
+     * strictly later. So the biller's window closes strictly LATER than the platform's, and
+     * the gap between them is a sliver where the platform has reverted but the biller would
+     * still settle. Agreeing on the NUMBER does not agree on the CLOCK.
+     */
+    private final long settlementWindowMs;
+
+    private static final Logger logger = LoggerFactory.getLogger(BillerStore.class);
+
     public BillerStore(@Value("${biller.failure-rate:0.0}") double failureRate,
                        @Value("${biller.default-delay-ms:0}") long defaultDelayMs,
-                       @Value("${biller.timeout-sleep-ms:65000}") long timeoutSleepMs) {
+                       @Value("${biller.timeout-sleep-ms:65000}") long timeoutSleepMs,
+                       @Value("${biller.settlement-window-ms:60000}") long settlementWindowMs) {
         this.failureRate = failureRate;
         this.delayMs = defaultDelayMs;
         this.timeoutSleepMs = timeoutSleepMs;
+        this.settlementWindowMs = settlementWindowMs;
     }
 
     /**
@@ -52,6 +77,9 @@ public class BillerStore {
      *    (models "it actually went through, you just didn't hear back").
      */
     public PaymentResult pay(PaymentRequest req) {
+        // 0. Start the settlement-window clock the moment the request arrives (S11).
+        long receivedAtNanos = System.nanoTime();
+
         // 1. Idempotency: same reference seen before -> replay the stored result, never pay twice.
         PaymentResult existing = settledByReference.get(req.reference());
         if (existing != null) {
@@ -75,13 +103,13 @@ public class BillerStore {
                 // Sleep past the caller's timeout, THEN settle it as paid. The caller gave up, but
                 // the payment really went through — a later inquiry by reference will reveal PAID.
                 sleep(timeoutSleepMs);
-                return settle(req, "PAID", "BILR-" + hex());
+                return settle(req, "PAID", "BILR-" + hex(), receivedAtNanos);
             }
             case FAIL -> {
-                return settle(req, "FAILED", null);   // definite failure, money not taken
+                return settle(req, "FAILED", null, receivedAtNanos);   // definite failure, money not taken
             }
             default -> {
-                return settle(req, "PAID", "BILR-" + hex());
+                return settle(req, "PAID", "BILR-" + hex(), receivedAtNanos);
             }
         }
     }
@@ -138,6 +166,7 @@ public class BillerStore {
         m.put("forcedMode", forcedMode);
         m.put("delayMs", delayMs);
         m.put("failureRate", failureRate);
+        m.put("settlementWindowMs", settlementWindowMs);
         m.put("settledReferences", settledByReference);
         return m;
     }
@@ -149,7 +178,29 @@ public class BillerStore {
 
     // ---- helpers ----
 
-    private PaymentResult settle(PaymentRequest req, String status, String billerTxnId) {
+    /**
+     * Record a definite outcome — UNLESS the agreed settlement window has already passed.
+     *
+     * S11: past the window the biller refuses and stores NOTHING. Storing nothing is what
+     * makes the refusal visible to the platform through machinery that already exists: a
+     * later inquiry returns NOT_FOUND, and `BillService.resolve` already reverts a bill that
+     * is NOT_FOUND and past its own window. No new status, no bill-service change.
+     *
+     * ⚠️ Honest limitation, deliberately left in place so the run can expose it: NOT_FOUND is
+     * a LIE. The biller does have a record — it received this request and refused it. The
+     * platform gets the right outcome for the wrong reason, and because nothing is stored the
+     * refusal is NOT idempotent: a later pay() on the same reference starts a fresh window
+     * and could still settle. The honest answer is an explicit EXPIRED status, which needs a
+     * new term in both sides' vocabulary — that is S11b.
+     */
+    private PaymentResult settle(PaymentRequest req, String status, String billerTxnId, long receivedAtNanos) {
+        long elapsedMs = (System.nanoTime() - receivedAtNanos) / 1_000_000L;
+        if (elapsedMs > settlementWindowMs) {
+            logger.warn("REFUSING to settle reference {} (bill {}): {} ms elapsed, agreed window is {} ms — storing nothing",
+                    req.reference(), req.billNumber(), elapsedMs, settlementWindowMs);
+            return new PaymentResult(req.reference(), req.billNumber(), "EXPIRED", null,
+                    "settlement window of " + settlementWindowMs + " ms elapsed (" + elapsedMs + " ms) — refused");
+        }
         PaymentResult result = new PaymentResult(req.reference(), req.billNumber(), status, billerTxnId, null);
         settledByReference.put(req.reference(), result);
         return result;

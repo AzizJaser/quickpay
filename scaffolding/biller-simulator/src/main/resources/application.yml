@@ -11,3 +11,8 @@ biller:
   # refunded at T+70 s, then the biller recorded PAID at T+90 s. Both sides self-consistent,
   # both sides disagreeing, and no invariant able to see it. Restored to 3000.
   timeout-sleep-ms: 3000
+  # S11 — the OTHER half of the settlement-window contract. S09 proved the window was never
+  # an agreement: it lived only in the bill service's config, so this simulator settled PAID
+  # 30 s after the platform had reverted and refunded. Past this, the biller refuses.
+  # Must match the bill service's biller-settlement-window-ms (60000).
+  settlement-window-ms: ${BILLER_SETTLEMENT_WINDOW:60000}
