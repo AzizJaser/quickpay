@@ -36,7 +36,15 @@ public class BillerStore {
 
     private final double failureRate;
     private volatile long delayMs;
-    private final long timeoutSleepMs;
+    /**
+     * How long TIMEOUT mode sleeps before deciding. Runtime-settable (S11): `delayMs` slows
+     * BOTH pay() and inquire() — that is deliberate and correct (S02b: a biller under load is
+     * slow on every endpoint), but it makes "slow to pay, fast to look up" impossible to
+     * express. S11's first attempt used delayMs=90000 and accidentally blocked the sweep's
+     * inquiries too, so `resolve` was never reached and the bill stranded at Reserved —
+     * reproducing the S01/S04 mechanism instead of testing the settlement window.
+     */
+    private volatile long timeoutSleepMs;
 
     /**
      * THE OTHER HALF OF THE SETTLEMENT-WINDOW CONTRACT (added for sabotage scenario S11).
@@ -154,10 +162,13 @@ public class BillerStore {
 
     // ---- control panel ----
 
-    public void setMode(Outcome mode, Long delayMsOverride) {
+    public void setMode(Outcome mode, Long delayMsOverride, Long timeoutSleepMsOverride) {
         this.forcedMode = (mode == null) ? Outcome.NORMAL : mode;
         if (delayMsOverride != null) {
             this.delayMs = delayMsOverride;
+        }
+        if (timeoutSleepMsOverride != null) {
+            this.timeoutSleepMs = timeoutSleepMsOverride;
         }
     }
 
@@ -167,6 +178,7 @@ public class BillerStore {
         m.put("delayMs", delayMs);
         m.put("failureRate", failureRate);
         m.put("settlementWindowMs", settlementWindowMs);
+        m.put("timeoutSleepMs", timeoutSleepMs);
         m.put("settledReferences", settledByReference);
         return m;
     }

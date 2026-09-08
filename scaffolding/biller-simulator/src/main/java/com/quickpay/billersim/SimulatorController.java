@@ -23,7 +23,7 @@ public class SimulatorController {
     }
 
     /**
-     * POST /simulate/mode  body: { "outcome": "SUCCESS|FAIL|SERVER_ERROR|TIMEOUT|NORMAL", "delayMs": 0 }
+     * POST /simulate/mode  body: { "outcome": "SUCCESS|FAIL|SERVER_ERROR|TIMEOUT|NORMAL", "delayMs": 0, "timeoutSleepMs": 0 }
      * Forces the outcome of subsequent pay calls. NORMAL = use the configured failure-rate.
      * delayMs is optional; when present it overrides the artificial latency on each pay call.
      */
@@ -32,7 +32,7 @@ public class SimulatorController {
         Outcome outcome = (request.outcome() == null)
                 ? Outcome.NORMAL
                 : Outcome.valueOf(request.outcome().trim().toUpperCase());
-        store.setMode(outcome, request.delayMs());
+        store.setMode(outcome, request.delayMs(), request.timeoutSleepMs());
         return store.state();
     }
 
@@ -49,6 +49,6 @@ public class SimulatorController {
         return store.state();
     }
 
-    public record ModeRequest(String outcome, Long delayMs) {
+    public record ModeRequest(String outcome, Long delayMs, Long timeoutSleepMs) {
     }
 }
