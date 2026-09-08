@@ -53,9 +53,11 @@ reconciliation discrepancy).
 goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
 is — the wallet refused a settle, nobody knows where the money is.
 
-⚠️ **Phase 7 rider:** the contract is a *number both sides agree on*, so sabotage should
-**violate it deliberately** — make the biller settle later than the window and watch the
-late settlement arrive after the revert. That is the discrepancy reconciliation is for.
+✅ **Phase 7 rider — RUN as S09 (8 Sep), and it landed harder than written.** The late
+settlement did arrive after the revert. But the sharper finding is that *"a number both
+sides agree on"* was never true: the window exists only in the bill service's config, so
+the biller settled `PAID` without any notion of it. **The golden rule held and money was
+still lost** — see `docs/sabotage/S09-late-settlement.md`.
 
 ---
 
@@ -145,9 +147,11 @@ reconciliation discrepancy).
 goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
 is — the wallet refused a settle, nobody knows where the money is.
 
-⚠️ **Phase 7 rider:** the contract is a *number both sides agree on*, so sabotage should
-**violate it deliberately** — make the biller settle later than the window and watch the
-late settlement arrive after the revert. That is the discrepancy reconciliation is for.
+✅ **Phase 7 rider — RUN as S09 (8 Sep), and it landed harder than written.** The late
+settlement did arrive after the revert. But the sharper finding is that *"a number both
+sides agree on"* was never true: the window exists only in the bill service's config, so
+the biller settled `PAID` without any notion of it. **The golden rule held and money was
+still lost** — see `docs/sabotage/S09-late-settlement.md`.
 
 ---
 
@@ -244,34 +248,63 @@ reconciliation discrepancy).
 goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
 is — the wallet refused a settle, nobody knows where the money is.
 
-⚠️ **Phase 7 rider:** the contract is a *number both sides agree on*, so sabotage should
-**violate it deliberately** — make the biller settle later than the window and watch the
-late settlement arrive after the revert. That is the discrepancy reconciliation is for.
+✅ **Phase 7 rider — RUN as S09 (8 Sep), and it landed harder than written.** The late
+settlement did arrive after the revert. But the sharper finding is that *"a number both
+sides agree on"* was never true: the window exists only in the bill service's config, so
+the biller settled `PAID` without any notion of it. **The golden rule held and money was
+still lost** — see `docs/sabotage/S09-late-settlement.md`.
 
 ---
 
-**▶ PHASE 7 IN PROGRESS. Next: S02 — hung biller.**
+**▶ PHASE 7 IN PROGRESS — 9 of ~12 scenarios run. Next: S10 (consumer-side loss).**
+Full records in `docs/sabotage/`; the index there is the scoreboard. Summary of what the
+runs actually bought:
 
-**S01 (biller down 5 min) run 4 Sep — `docs/sabotage/S01-biller-down.md`.** 4 of 5
-predictions held. Two findings:
+| run | the finding | fix |
+|---|---|---|
+| S01–S03 | three scenarios chased the circuit breaker and **none earned it** — a dead process refuses in ~1 ms, `inquire` was a bare map lookup, and S03's bulk inquiry then removed ~80% of the cost that S02b had used to earn it | **topic #5 still open, deliberately** |
+| S04 | a bill **cannot expire while the biller is unresponsive** — falsified a third time, by a third mechanism | none — quantified an accepted risk |
+| S05 | **slow-but-working is invisible**: a 300× slowdown produces byte-identical logs. A failure-count breaker cannot see it | argues for *instrumentation*, not protection |
+| S06 | the **eligibility boundary moves during a pass** (`now()` per bill), and the split is non-deterministic — no `ORDER BY` | none; an `ORDER BY` is the one supported change |
+| S07 | **the relay stopped for 39.3 s** while 7,186 notifications waited — two unrelated jobs on one scheduler thread | ✅ **first earned fix**: `scheduling.pool.size` |
+| S07b | the gap **vanished** (39.3 s → 2.0 s) rather than shrinking, and fixing it **revealed a 50 events/s relay ceiling** hidden behind the blocking | ✅ **fix proven & kept** |
+| S08 | **the outbox guarantees delivery to the BROKER, not to a consumer** — 3 messages destroyed, `sent_at` marked, zero errors, nothing recovers them | ✅ detection built (`mandatory` + returns callback); **recovery deferred past Phase 7** |
+| S09 | 🔴 **the golden rule HELD and money was still lost.** See below | none — the deepest finding so far |
+
+### 🔴 S09 — what the invariants cannot see (run 8 Sep)
+
+The biller settled `PAID` 30 s after the settlement window had already reverted and refunded
+the bill. Afterwards: customer refunded and notified · bill service says `Rejected` · biller
+says `PAID` · wallet **perfectly balanced, zero drift**.
+
+**Every view is individually self-consistent. The inconsistency lives only in the space
+BETWEEN the systems, and nothing measures that space.** `SUM(HOLD) − SUM(SETTLEMENT) −
+SUM(RELEASE)` and the suspense balance are both derived from the wallet's own ledger — two
+counts of the same book. They cannot disagree about money the book does not know about.
+**A second "independent" count that shares a source is not independent.** The platform now
+owes the biller 77 SAR and no record of that debt exists anywhere.
+
+Second finding: the settlement window is **a contract only one side knows about**.
+`biller-settlement-window-ms` lives in the bill service's config; the biller has never heard
+of it. It was introduced to replace a guess with an agreement, and the agreement was never
+actually made — **a unilateral timeout wearing a contract's clothes.**
+
+**Consequence for the sweep:** `EODReconciliationJob` asks the biller about bills *it already
+knows are unresolved*. It never asks *"what do you think you settled that I don't?"* — which
+is what settlement reconciliation is, and the only check that would catch this.
+**Recorded as a residual risk with a measured example, not fixed.**
+
+**S01 (biller down 5 min) — the two original findings, kept because they still hold:**
 
 1. **A bill cannot expire while the biller is unreachable.** The settlement-window check
    lives inside `resolve`, which is only called with a `BillerResult` — when `inquire`
    throws, `resolve` never runs and the window is never consulted. Correct (reverting with
-   no answer is reverting on no evidence) but weaker than assumed: customer money stays
-   held for the whole outage, with nothing told to them.
-2. **🔴 The scenario falsified its own premise.** It was written expecting each call to burn
-   a full 2 s timeout. Measured: **~1 ms** per failed inquire. A stopped process sends TCP
-   RST, so the connection is *refused*; the read timeout only applies once a connection is
-   **accepted**. **A dead dependency is the cheap failure; a hung one is expensive.**
+   no answer is reverting on no evidence) but weaker than assumed.
+2. **🔴 The scenario falsified its own premise.** Written expecting each call to burn a full
+   2 s timeout; measured **~1 ms**. A stopped process sends TCP RST, so the connection is
+   *refused*. **A dead dependency is the cheap failure; a hung one is expensive.**
 
-**Consequence: S01 did NOT earn the circuit breaker** — breaking a circuit on a 1 ms failure
-saves nothing measurable. Resilience4j deliberately **not** added. **S02 (hung biller,
-`TIMEOUT` mode with delay ≫ read timeout) is the scenario that would earn it**, and topic #5
-stays open until it does. The earned-fixes rule doing real work: the scenario designed to
-justify a fix turned out not to justify it.
-
-Golden rule held throughout — two independent counts agreed, zero wallet drift.
+Golden rule verified after every run — two counts, zero drift, ten times.
 
 **Three scenarios already found by building, not by imagining:**
 1. **Circuit breaker (closes topic #5).** Biller down 5 min. The EOD sweep is **serial** —
@@ -1558,6 +1591,8 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-09-08 | **S09 — the golden rule held and money was still lost.** The biller settled `PAID` 30 s after the settlement window had already reverted and refunded the bill. Customer refunded and notified, bill service says `Rejected`, biller says `PAID`, wallet perfectly balanced with zero drift. **The finding is about what the invariants can see:** the held-money identity and the suspense balance are both derived from the wallet's own ledger — two counts of the same book — so they cannot disagree about money the book does not know about. A second "independent" count that shares a source is not independent. Second finding: the settlement window is **a contract only one side knows about** — it lives in the bill service's config and the biller has never heard of it, so it is a unilateral timeout wearing a contract's clothes. `EODReconciliationJob` asks about bills it already knows are unresolved; it never asks the biller *"what did you settle that I don't have?"*. Recorded as a **residual risk with a measured example, not fixed**. NEXT ACTION → S10 (consumer-side loss). |
+| 2026-09-07 | **S07b and S08 — the first two fixes of Phase 7, one proven and one half-built.** S07b: `scheduling.pool.size: 2` made the relay's 39.3 s stall **vanish** (2.0 s max gap, zero duplicates across 20,297 `message_id`s) rather than merely shrink — and removing the blocking **revealed a 50 events/s relay ceiling** that had been invisible behind it. S08: deleting a binding proved **the outbox guarantees delivery to the BROKER, not to a consumer** — RabbitMQ accepts and discards, the relay logs nothing, marks `sent_at`, and restoring the binding recovers nothing. Money never at risk across ten runs; *the invariants protect money, nothing protects the customer's knowledge.* Built and verified the **detection** half (`mandatory` + `publisher-returns` + a returns callback naming the `event_id`), on both the bill and wallet relays; **recovery — unmarking `sent_at` so the relay retries — deliberately deferred past Phase 7**, with the retry bound to be decided before any code is written. |
 | 2026-09-03 | **THE BUILD IS DONE — bill → notification verified end to end.** AMQP wiring, relay job, `bill.payment.*` binding, `NotificationMessage` enum. **One bill payment → exactly one customer notification**, carrying the correlation id of the originating HTTP request; **seven log lines across three JVMs, five threads, a database and a broker, from one grep.** Decisions: one exchange with producer-owned routing-key namespaces (exchange-per-producer would force consumers to enumerate exchanges — more coupling, not less); one queue, two bindings (separate queues rejected as pre-solving head-of-line blocking — earned in Phase 7, not assumed). Message text moved to an enum because four routing keys cannot fit a two-way ternary; the lookup **throws** rather than shipping generic text. **NEXT ACTION → Phase 7 sabotage**, with three scenarios already collected. |
 | 2026-08-31 | **Bill outbox writes.** `V3` table + `V4` cif column; events written transactionally on every resolved outcome; `Failed` writes none (needs manual intervention — a customer cannot act on "we do not know where your money is"). Transaction boundary decided: HTTP **outside**, writes **inside**, on a separate bean because `this.method()` bypasses the proxy. Found a pre-existing cross-service DTO mismatch (`original_entry_id` vs `originalEntryId`) that made every reverse 404 and strand bills — the class of defect mocked tests cannot catch. **Relay next; the bill service has no AMQP wiring yet.** |
 | 2026-08-28 | **Notification ownership decided.** Wallet suppresses the whole hold lifecycle via `TransactionType.isCustomerFacing()`. Rule: *the service that knows why the money moved owns the message.* A bill payment now produces **zero** wallet events, so the customer gets **one** message, from the bill service. |

@@ -5,4 +5,9 @@ biller:
   # NORMAL-mode behaviour (used when no outcome is forced via POST /simulate/mode).
   failure-rate: 0.0        # 0.0 = always succeed; raise toward 1.0 for sabotage testing
   default-delay-ms: 0      # artificial latency added to every pay call (simulate a slow biller)
-  timeout-sleep-ms: 90000  # S09: deliberately ABOVE the bill service 60s settlement window
+  # TIMEOUT mode sleeps this long, THEN settles PAID. Keep it BELOW the bill service's
+  # biller-settlement-window-ms (60 s) so a late settlement still lands inside the window.
+  # S09 raised it to 90000 to push a settlement past the window: the bill was reverted and
+  # refunded at T+70 s, then the biller recorded PAID at T+90 s. Both sides self-consistent,
+  # both sides disagreeing, and no invariant able to see it. Restored to 3000.
+  timeout-sleep-ms: 3000
