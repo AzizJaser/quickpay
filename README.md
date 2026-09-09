@@ -10,6 +10,45 @@ with a written prediction committed before every run.
 
 ---
 
+## How this was built — who wrote what
+
+This is a **learning project**, and it is built under a constraint that is enforced rather
+than aspirational: **the human writes every line of application code. The AI assistant is
+forbidden from writing any of it.**
+
+The rules live in [`CLAUDE.md`](CLAUDE.md) and are read by the assistant at the start of every
+session.
+
+| | author |
+|---|---|
+| `wallet-service`, `bill-service`, `notification-service` — application code, SQL migrations, tests | **human, every line** |
+| `scaffolding/**` — the gateway, biller and provider simulators | assistant |
+| `docker-compose.yml`, `pom.xml`, `.github/workflows/` — build and test infrastructure, **only when explicitly asked** | assistant |
+| `docs/**` — the sabotage records, the Phase 7 report, this README | assistant |
+
+**The assistant's actual job is to be a blunt senior reviewer.** Asked about a bug, it explains
+what is happening and why, then suggests the *shape* of a fix — pseudocode at most. It does not
+hand over a patch. There is one deliberate escape hatch, invoked by name, under which it may
+write real code — and then it must explain every line and tell the human to retype it rather
+than paste it.
+
+Two further rules shape what is in this repository:
+
+- **A prediction must be written and committed before any experiment runs.** Every scenario in
+  [`docs/sabotage/`](docs/sabotage/) opens with the human's prediction, verbatim, timestamped
+  by its own commit — including the ones that turned out wrong. That is why the ~56% accuracy
+  figure in the Phase 7 report means anything; it could not be adjusted afterwards.
+- **Fixes must be earned.** A protection is added because a scenario measured the harm, not
+  because it seemed prudent. This is why there is no circuit breaker in a codebase where five
+  separate scenarios went looking for one.
+
+The reasoning is simple: the learning value lives in writing the code, so an assistant that
+writes it for you has removed the thing you were there for. Reviewing, arguing, and being
+argued out of a position are all fair game — several decisions in the plan record the assistant
+losing that argument.
+
+---
+
 ## What it does
 
 A customer pays a bill from their wallet. The money is held in a suspense account, sent to an
