@@ -11,7 +11,9 @@
 
 ## ▶ NEXT ACTION (update this line every session)
 
-### ✅ PHASE 7 COMPLETE — 12 scenarios run (9 Sep). Criterion: *"12 scenarios run, most predicted, every surprise explained."*
+### ✅ PHASE 7 COMPLETE — 14 runs (9 Sep). 📄 **Final report: `docs/sabotage/PHASE7_REPORT.md`**
+
+**Criterion:** *"12 scenarios run, most predicted, every surprise explained."* — met. Prediction accuracy **34.5 / 62 ≈ 56%**; four fixes built (bulk inquiry, `scheduling.pool.size`, `mandatory` detection, the two-sided settlement window); the **circuit breaker deliberately NOT built** across five scenarios.
 
 **Pick one to resume:**
 

@@ -12,6 +12,11 @@ is born.
 
 ---
 
+## 📄 [**PHASE 7 FINAL REPORT**](PHASE7_REPORT.md) — 14 runs, ~56% predicted, 4 fixes built,
+the circuit breaker deliberately not among them. Read this before the individual records.
+
+---
+
 ## Rules
 
 1. **Write the prediction first, and save it.** A prediction written afterwards is a
