@@ -1,10 +1,25 @@
 name: CI
 
-# Run on every push to main and on every pull request.
+# Run on EVERY branch, plus every pull request.
+#
+# This used to be `branches: [ main ]`, which meant feature-branch pushes never ran CI.
+# The build broke on 31 Aug 2026 (a test mock stubbing walletClient.hold() with the old
+# TransferResponse return type) and stayed red for nine days and ~50 commits, because the
+# next thing to actually run the tests was a pull request. Compilation was the only thing
+# wrong — the behaviour was fine the whole time — so the cost was pure archaeology.
+#
+# A branch that does not build is something to learn about on the commit that broke it,
+# not at merge time.
 on:
   push:
-    branches: [ main ]
+    branches: [ '**' ]
   pull_request:
+
+# A PR from a branch in this repo now matches BOTH triggers, so it queues two runs.
+# This cancels superseded runs on the same ref, so rapid pushes do not pile up.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-test:
