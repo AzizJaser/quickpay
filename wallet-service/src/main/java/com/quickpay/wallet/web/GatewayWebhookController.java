@@ -50,7 +50,7 @@ public class GatewayWebhookController {
             //  (redelivery already processed).
         }
         // 2. parse rawBody → walletNumber, amount, gatewayTxnId
-        // 3. topUp(walletNumber, amount, gatewayTxnId)   // gateway txn id = idempotency key
+        // 3. topUp(walletNumber, amount, gatewayTxnId)   // gateway txn id = idempotencyKey key
         return ResponseEntity.status(HttpStatus.OK).build();
         // 4. catch DuplicatedEntryException → still return 200 (so the gateway stops redelivering)
         // 5. return 200

@@ -15,9 +15,12 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientException;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -43,24 +46,64 @@ public class EODReconciliationJob {
 
             // get the reserved bill and move the funds to the customers wallets
             List<Bill> bills = billRepository.findByStatus(BillStatus.Reserved);
+            if(bills.isEmpty()){
+                return;
+            }
+            List<String> references = convertBillToString(bills);
 
-            for(Bill bill : bills){
+            HashMap<String,Bill> byPaymentId = new HashMap<>();
+            for(Bill bill: bills){
                 try {
-                    BillerResult result = billerClient.inquire(bill.getPaymentId());
-                    billService.resolve(bill,result);
-                }catch (HttpServerErrorException e){
-                    logger.error("biller 5xx in reconciliations ...");
-                    // OPS ticket
-                } catch (ResourceAccessException e){
-                    logger.error("unable to connect to the biller ...");
+                    byPaymentId.put(bill.getPaymentId(),bill);
+//                }catch (HttpServerErrorException e){
+//                    logger.error("biller 5xx in reconciliations ...");
+//                    // OPS ticket
+//                } catch (ResourceAccessException e){
+//                    logger.error("unable to connect to the biller ...");
                 }catch (Exception e){
                     logger.error("unable to resolve bill "+bill.getPaymentId());
                 }
+            }
+            List<BillerResult> results;
+            try {
+                results = billerClient.inquiries(references);
+            } catch (HttpServerErrorException e){
+                logger.error("biller 5xx during reconciliation — {} bills unresolved", bills.size());
+                return;
+            } catch (ResourceAccessException e){
+                logger.error("cannot reach the biller — {} bills unresolved", bills.size());
+                return;
+            } catch (RestClientException e){
+                logger.error("biller call failed unexpectedly — {} bills unresolved", bills.size(), e);
+                return;
+            }
+
+            for(BillerResult result : results){
+                Bill bill = byPaymentId.remove(result.reference());
+                if(bill == null){
+                    logger.warn("biller returned an unknown reference {}", result.reference());
+                    continue;
+                }
+                try {
+                    billService.resolve(bill,result);
+                } catch (Exception e){
+                    logger.error("failed to resolve payment {}", result.reference(), e);
+                }
+            }
+            if(!byPaymentId.isEmpty()){
+                logger.warn("{} bills asked about but absent from the response: {}",
+                        byPaymentId.size(), byPaymentId.keySet());
             }
         } finally {
             MDC.remove(MDC_KEY);
         }
 
+    }
+
+    public List<String> convertBillToString(List<Bill> bills){
+        return bills.stream()
+                .map(Bill::getPaymentId)
+                .toList();
     }
 
 }

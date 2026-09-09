@@ -6,7 +6,7 @@ import jakarta.validation.constraints.Positive;
 
 public record TopUpRequest(
         @NotBlank
-        String wallet_number,
+        String walletNumber,
         @NotNull
         @Positive
         Long amount

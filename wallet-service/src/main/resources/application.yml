@@ -29,6 +29,10 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USER:quickpay}
     password: ${RABBITMQ_PASS:quickpay}
+    publisher-returns: true
+    publisher-confirm-type: correlated
+    template:
+      mandatory: true
 
 server:
   port: 8080
@@ -39,7 +43,10 @@ logging:
   pattern:
     level: "%5p [%X{correlationId:-}]"
   level:
-    org.hibernate.SQL: debug   # see the SQL Hibernate generates while you learn
+    org.hibernate.SQL: warn   # see the SQL Hibernate generates while you learn
+  logback:
+    rollingpolicy:
+      max-history: 60
 
 wallet:
   max-per-cif: ${WALLET_MAX_PER_CIF:5}

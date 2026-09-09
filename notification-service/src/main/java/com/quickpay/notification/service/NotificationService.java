@@ -7,6 +7,7 @@ import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
 import com.quickpay.notification.dto.response.ProviderResponse;
+import com.quickpay.notification.enums.NotificationMessage;
 import com.quickpay.notification.enums.NotificationState;
 import com.quickpay.notification.enums.NotificationStatus;
 import com.quickpay.notification.exception.CustomerNotFoundException;
@@ -37,15 +38,11 @@ public class NotificationService {
 
     public void deliver(ProcessedEvent event, Customer customer, String routingKey) {
 
-        String message = routingKey.equals("wallet.money.sent")
-                ? "your transaction has been sent!"
-                : "you received a transaction!";
-
-
+        NotificationMessage message = NotificationMessage.fromRoutingKey(routingKey);
 
         if (event.getSmsState().equals(NotificationState.PENDING) && event.getAttempts() < MAXIMUM_RETRIES) {
             ProviderResponse response = notificationProviderClient
-                    .smsProvider(customer.getPhoneNumber(), message, event.getMessageId());
+                    .smsProvider(customer.getPhoneNumber(), message.getMessage(), event.getMessageId());
             //event.setSmsStatus(response.status() == NotificationStatus.SENT); --- deprecated
             event.setSmsState(response.status() == NotificationStatus.SENT ? NotificationState.SENT : NotificationState.PENDING);
             if (event.getSmsState().equals(NotificationState.SENT)) {
@@ -62,7 +59,7 @@ public class NotificationService {
 
         if (event.getEmailState().equals(NotificationState.PENDING) && event.getAttempts() < MAXIMUM_RETRIES) {
             ProviderResponse response = notificationProviderClient
-                    .emailProvider(customer.getEmail(), message, event.getMessageId());
+                    .emailProvider(customer.getEmail(), message.getMessage(), event.getMessageId());
             //event.setEmailStatus(response.status() == NotificationStatus.SENT); --- deprecated
             event.setEmailState(response.status() == NotificationStatus.SENT ? NotificationState.SENT : NotificationState.PENDING);
             if (event.getEmailState().equals(NotificationState.SENT)) {

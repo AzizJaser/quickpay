@@ -43,6 +43,16 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!-- RabbitMQ (AMQP) — the bill service publishes bill.payment.paid /
+             bill.payment.rejected to the shared quickpay.events topic exchange for the
+             notification service to consume. Publish-only: it declares the exchange but
+             no queue and no binding — those belong to the consumer. Gives you
+             RabbitTemplate plus the auto-config that reads spring.rabbitmq.* below. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
         <!-- Postgres driver (runtime only) -->
         <dependency>
             <groupId>org.postgresql</groupId>

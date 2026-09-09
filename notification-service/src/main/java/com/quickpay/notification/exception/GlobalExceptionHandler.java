@@ -22,4 +22,14 @@ public class GlobalExceptionHandler {
         problem.setTitle("Customer Not Found");
         return problem;
     }
+
+    @ExceptionHandler(NotificationTypeNotFoundException.class)
+    public ProblemDetail handlerNotificationTypeNotFoundException(NotificationTypeNotFoundException e){
+        logger.error("notification with routing key :"+e.getKey()+" is not found");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Routing Key is Not Found");
+        return problem;
+    }
 }

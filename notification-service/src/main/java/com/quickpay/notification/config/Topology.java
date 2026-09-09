@@ -17,6 +17,8 @@ public class Topology {
     private String exchangeName;
     @Value("${notification.routing-key}")
     private String routingKey;
+    @Value("${notification.bill-routing-key}")
+    private String billRoutingKey;
 
     @Bean
     public Queue notificationQueue(){
@@ -31,5 +33,10 @@ public class Topology {
     @Bean
     public Binding notificationBinding(Queue notificationQueue,TopicExchange eventsExchange){
         return BindingBuilder.bind(notificationQueue).to(eventsExchange).with(routingKey);
+    }
+
+    @Bean
+    public Binding billNotificationBinding(Queue notificationQueue,TopicExchange eventsExchange){
+        return BindingBuilder.bind(notificationQueue).to(eventsExchange).with(billRoutingKey);
     }
 }

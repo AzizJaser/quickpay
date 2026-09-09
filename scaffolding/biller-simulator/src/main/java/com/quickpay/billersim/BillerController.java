@@ -9,6 +9,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * The mock biller's PUBLIC API — this is the "external biller network" the bill service calls.
  * Slow + flaky on purpose (see {@link BillerStore}). Pay is IDEMPOTENT on the client reference.
@@ -51,5 +53,29 @@ public class BillerController {
                     .body(new PaymentResult(reference, null, "NOT_FOUND", null, "no settlement for this reference"));
         }
         return ResponseEntity.ok(result);
+    }
+
+    /**
+     * BULK inquiry — reconciliation in one round trip. Body: ["refA","refB",...].
+     *
+     * Always 200: the HTTP status describes the batch call, not the individual references.
+     * Each entry carries its own status (PAID / FAILED / NOT_FOUND), and every requested
+     * reference appears in the response — a reference the biller never settled comes back
+     * as NOT_FOUND rather than being omitted, so the caller can distinguish "no record"
+     * from "missing from the response".
+     *
+     * This is how real reconciliation works: a settlement file or a bulk status query, not
+     * N polls. Per-reference polling made the bill service's sweep cost scale with its
+     * backlog — 5 stranded bills cost 10 s per pass in sabotage scenario S02b, growing
+     * linearly. One batched call costs the same as one single call.
+     *
+     * The all-or-nothing trade is deliberate: if this call times out the caller gets no
+     * results at all, where per-reference polling would have returned the ones that
+     * answered. That is acceptable because the retry is now cheap — a failed batch costs
+     * one timeout, not N.
+     */
+    @PostMapping("/payments/inquiries")
+    public ResponseEntity<List<PaymentResult>> inquireAll(@RequestBody List<String> references) {
+        return ResponseEntity.ok(store.inquireAll(references));
     }
 }

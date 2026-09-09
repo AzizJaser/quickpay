@@ -40,7 +40,10 @@ logging:
   pattern:
     level: "%5p [%X{correlationId:-}]"
   level:
-    org.hibernate.SQL: debug
+    org.hibernate.SQL: warn
+  logback:
+    rollingpolicy:
+      max-history: 60
 
 notification:
   # The exchange the wallet (and later the bill service) publishes to. This service
@@ -50,8 +53,9 @@ notification:
   # Suggested: a durable queue bound with routing key "wallet.money.*"
   queue-name: ${NOTIFICATION_QUEUE_NAME:notification.money-events}
   routing-key: ${NOTIFICATION_ROUTING_KEY:wallet.money.*}
+  bill-routing-key: ${NOTIFICATION_BILL_ROUTING_KEY:bill.payment.*}
   maximum-retries: ${NOTIFICATION_MAXIMUM_RETRIES:5}
-  provider-base-url: ${NOTIFICATION_PROVIDER_URL:http://localhost:9092}
+  provider-base-url: ${NOTIFICATION_PROVIDER_URL:http://localhost:9093}
   wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080}
   biller-base-url: ${BILLER_BASE_URL:http://localhost:9091}
   resend-interval-ms: ${NOTIFICATION_RESENDING_JOB:5000}

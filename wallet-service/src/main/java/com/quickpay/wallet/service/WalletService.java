@@ -6,6 +6,8 @@ import com.quickpay.wallet.domain.LedgerEntry;
 import com.quickpay.wallet.domain.NotificationEvent;
 import com.quickpay.wallet.domain.Wallet;
 import com.quickpay.wallet.dto.event.MoneyMovedPayload;
+import com.quickpay.wallet.dto.response.HoldResponse;
+import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.enums.WalletStatus;
 import com.quickpay.wallet.exception.*;
 import com.quickpay.wallet.repository.LedgerEntryRepository;
@@ -22,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.UUID;
 
 
@@ -33,8 +36,10 @@ public class WalletService {
     private final LedgerEntryRepository ledgerEntryRepository;
     private final NotificationEventRepository notificationEventRepository;
     private final ObjectMapper objectMapper;
-    private final String INTERNAL_TRANSACTION_ACCOUNT = "000000000001";
-    private final String INTERNAL_OUTWARD_ACCOUNT = "000000000002";
+    private final static String INTERNAL_TRANSACTION_ACCOUNT = "000000000001";
+    private final static String INTERNAL_OUTWARD_ACCOUNT = "000000000002";
+    private final static String SUSPENSE_ACCOUNT = "000000000003";
+    private final static String BILLER_ACCOUNT = "000000000004";
     private static final Logger logger = LoggerFactory.getLogger(WalletService.class);
 
     @Value("${wallet.max-per-cif:5}")
@@ -47,7 +52,7 @@ public class WalletService {
 
     // need to write the DTOs for this service
     @Transactional
-    public LedgerEntry transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey,String original_entry_id){
+    public LedgerEntry transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey,String original_entry_id,String settles_entry_id, TransactionType transactionType){
 
         if(amount == null || amount <= 0) {
                 throw new InvalidAmountException("Unable to the transaction, amount is 0 or less");
@@ -84,14 +89,16 @@ public class WalletService {
             throw new InsufficientBalanceException("insufficient balance for wallet number = "+debitedWalletNumber,debitedWalletNumber);
         }
         // post ledger entry
-        LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id);
+        LedgerEntry entry = new LedgerEntry(debitedWalletNumber,creditedWalletNumber,-amount,amount,idempotencyKey,original_entry_id,settles_entry_id,transactionType);
         ledgerEntryRepository.save(entry);
 
-        if(!debitedWallet.isInternal()){
-            notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
-        }
-        if (!creditedWallet.isInternal()){
-            notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+        if(entry.getTransactionType().isCustomerFacing()){
+            if(!debitedWallet.isInternal()){
+                notificationEventRepository.save(notificationEventHelper("wallet.money.sent",debitedWallet.getCif(),debitedWalletNumber,creditedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+            }
+            if (!creditedWallet.isInternal()){
+                notificationEventRepository.save(notificationEventHelper("wallet.money.received",creditedWallet.getCif(),creditedWalletNumber,debitedWalletNumber,entry.getEntryId(), entry.getCredited_amount()));
+            }
         }
         logger.info("ledger with entry id {} saved",entry.getEntryId());
         return entry;
@@ -99,17 +106,42 @@ public class WalletService {
 
     @Transactional
     public LedgerEntry topUp(String wallet_number,Long amount,String idempotencyKey){
-        return transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey,null);
+        return transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey,null,null,TransactionType.DEPOSIT);
     }
     @Transactional
     public LedgerEntry withdraw(String wallet_number,Long amount,String idempotencyKey){
-        return transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey,null);
+        return transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.WITHDRAWAL);
     }
     @Transactional
     public LedgerEntry revers(String original_entry_id, String idempotencyKey){
         LedgerEntry entry = ledgerEntryRepository.findByEntryId(original_entry_id)
                 .orElseThrow(()-> new EntryNotFoundException(original_entry_id));
-        return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id);
+        TransactionType type = entry.getTransactionType() == TransactionType.HOLD ? TransactionType.RELEASE : TransactionType.REVERSAL;
+        return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id,null,type);
+    }
+    @Transactional
+    public HoldResponse hold(String wallet_number, Long amount, String idempotencyKey){
+        LedgerEntry entry = transfer(wallet_number,SUSPENSE_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.HOLD);
+        return new HoldResponse(entry.getEntryId(),idempotencyKey,getCifByWalletNumber(wallet_number));
+    }
+
+    @Transactional
+    public LedgerEntry settle(String entryId,String idempotencyKey){
+        LedgerEntry entry = ledgerEntryRepository.findByEntryId(entryId)
+                .orElseThrow(()-> new EntryNotFoundException(entryId));
+
+        if(entry.getTransactionType() == TransactionType.HOLD){
+
+            Optional<LedgerEntry> discharged = ledgerEntryRepository.findEntryByHoldId(entryId);
+            if(discharged.isPresent()){
+                LedgerEntry discharger = discharged.get();
+                throw new HoldAlreadyDischargedException(entryId, discharger.getEntryId(), discharger.getTransactionType());
+            }
+            LedgerEntry settledEntry = transfer(SUSPENSE_ACCOUNT, BILLER_ACCOUNT, entry.getCredited_amount(), idempotencyKey,null,entryId,TransactionType.SETTLEMENT);
+            return settledEntry;
+        } else{
+            throw new UnHoldTransactionException(entryId);
+        }
     }
 
     public Wallet createWallet(String cif,String wallet_name){
@@ -179,5 +211,11 @@ public class WalletService {
         }
         NotificationEvent event = new NotificationEvent(payload,null,eventType,UUID.randomUUID(), MDC.get("correlationId"));
         return event;
+    }
+    private String getCifByWalletNumber(String walletNumber){
+        Wallet wallet = walletRepository.findByWalletNumber(walletNumber).orElseThrow(
+                () -> new WalletNotFoundException("Wallet was not found with id = "+walletNumber,walletNumber)
+        );
+        return wallet.getCif();
     }
 }

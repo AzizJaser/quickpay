@@ -5,14 +5,368 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-08-15 (rev 9 — service #3 complete; traceability complete; Phase 7 unblocked)**
+> Last updated: **2026-09-06 (rev 15 — seven scenario-runs. Still zero protections built; topic #5 reframed as instrumentation)**
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
 
-**Service #3 (notifications) is COMPLETE and traceability (Bucket D) is COMPLETE.
-Phase 7 sabotage is now unblocked. Choose the next thread — see "NEXT" below.**
+### ✅ PHASE 7 COMPLETE — 14 runs (9 Sep). 📄 **Final report: `docs/sabotage/PHASE7_REPORT.md`**
+
+**Criterion:** *"12 scenarios run, most predicted, every surprise explained."* — met. Prediction accuracy **34.5 / 62 ≈ 56%**; four fixes built (bulk inquiry, `scheduling.pool.size`, `mandatory` detection, the two-sided settlement window); the **circuit breaker deliberately NOT built** across five scenarios.
+
+**Pick one to resume:**
+
+| option | what it is | needs |
+|---|---|---|
+| **S11b** | explicit `EXPIRED` instead of the biller lying with `NOT_FOUND`. ⚠️ Ship the biller first and the bill service cannot deserialize the new enum value — the whole bulk inquiry throws and **every** bill in that pass stays `Reserved`. **A contract change has a rollout order** — the cross-service cousin of expand-contract | `BillerStatus.EXPIRED` + a `resolve` branch — **your code** |
+| **S11c** | the knife edge: a settlement landing *between* the two windows. The only run that can test S11a's untested Q2, and the one that earns `expiresAt` in the pay request | scaffolding only |
+| **duplicate · kill mid-saga · flood** | three untouched categories | scaffolding only |
+
+**Decisions waiting, in priority order** (all measured, none built — Phase 7 is measurement):
+
+1. 🔴 **The retry budget must be a duration, not a count** (S10). `maximum-retries: 5` ×
+   `resend-interval-ms: 5000` = **25 seconds** before a notification is destroyed permanently.
+   ⚠️ **Do not fix the `attempts` increment first** — that converts an unbounded retry into
+   *guaranteed* loss in 25 s. **Budget before counter.**
+2. 🟢 **End-to-end reconciliation is EARNED** (S10) and needs **two** queries — *missing row*
+   (set difference on `message_id` = `event_id`, no new schema) and *terminal `FAILED` row*.
+   Neither sees the other. With a **start boundary**, or it reports noise as findings.
+3. 🟡 **`expiresAt` in the pay request** (S11a). The settlement window agrees a number but not
+   the **anchor** or **whose clock** — the bill service measures from `bill.created_at`, the
+   biller from request arrival. One clock, one anchor, nothing to keep in sync.
+4. **`mandatory` recovery half** (S08) — unmark `sent_at` so the relay retries. Returns are
+   asynchronous and the callback runs outside any transaction. **Decide the retry bound first.**
+
+---
+
+### ✅ CLOSED — bounding the sweep (decided 3 Sep, landed)
+
+**The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
+There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
+anywhere in the bill service — a stark contrast with `processed_events`, which has all
+three. `ELEC-972` has been swept every 10s since 27 Aug: roughly **60,000 attempts**, each a
+full HTTP round trip.
+
+**Two failures were being conflated in that sweep, and they need different handling:**
+
+| what happened | evidence | retry? |
+|---|---|---|
+| `inquire` **fails** (biller unreachable) | transient, tells you nothing | yes — this is the circuit-breaker case |
+| `inquire` **succeeds** → `NOT_FOUND` | the biller genuinely has no record | bounded — see below |
+
+**The insight (learner's, and it is the real limit).** `NOT_FOUND` cannot distinguish *"never
+arrived"* from *"arrived, still processing"* — the simulator models exactly this with
+`TIMEOUT` ("sleep past the caller's timeout, then settle PAID — it landed, you didn't hear
+back"). So reverting on the **first** `NOT_FOUND` can refund a customer for a payment the
+biller is about to settle: money destroyed from the platform's side.
+
+But **no threshold fixes it either**: any count or elapsed time is a *bet* that nothing
+arrives afterwards. `inquire` reports the biller's state at an instant, never its future.
+You can shrink the probability; you cannot reach zero. **This is not a flaw in the retry
+logic — it is a missing term in the biller's contract.**
+
+✅ **DECIDED — a settlement window.** What makes reverting safe is **agreement, not
+confidence**. If the biller commits to *"any payment I accept, I settle within N"*, then
+`NOT_FOUND` after N means *void by contract*, and the revert is correct by agreement rather
+than by hope. Real schemes work this way — and **`EODReconciliationJob` is already named
+after a contract that was never defined**: end-of-day reconciliation exists in banking
+*because* the cut-off makes the day's outcome final.
+
+Rejected: **escalate-to-human after N** (safe, but leaves customer money held indefinitely
+and does not scale) and **accept the risk with a generous timeout** (what many real systems
+do, and honest *if you know you are doing it* — but it leaves the late settlement as a
+reconciliation discrepancy).
+
+**Outcome at expiry: revert → `Rejected`.** Not a new terminal state: the money genuinely
+goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
+is — the wallet refused a settle, nobody knows where the money is.
+
+✅ **Phase 7 rider — RUN as S09 (8 Sep), and it landed harder than written.** The late
+settlement did arrive after the revert. But the sharper finding is that *"a number both
+sides agree on"* was never true: the window exists only in the bill service's config, so
+the biller settled `PAID` without any notion of it. **The golden rule held and money was
+still lost** — see `docs/sabotage/S09-late-settlement.md`.
+
+---
+
+**⚠️ SUPERSEDED SNAPSHOT (as of S06). The current Phase 7 status is the block further down —
+search `11 of ~12`.** Kept only because deleting it would lose the reasoning below; almost all
+of it is duplicated verbatim in the current block. **Safe to prune.**
+
+**▶ PHASE 7 — S01–S06 run at the time of writing. Next was: S07 (10,000-bill backlog).**
+
+⚠️ **State is clean:** 0 `Reserved` bills · held 12 = suspense 12 (the known orphan) ·
+wallet `005100000001` = 1870. Nothing half-finished.
+
+**Scorecard: one code fix, one design change, ZERO protections built.** Every protection was
+either unearned, made redundant, or unsupported by measurement. Full records in
+`docs/sabotage/`.
+
+| | result |
+|---|---|
+| **S01** biller stopped | breaker unearned — connection-refused costs **~1 ms** |
+| **S02** hung `pay` | untestable (`inquire` was a bare map lookup) — found `RestClientException` escaping the catch lists |
+| **S02b** slow both paths | breaker **EARNED**: 10 s/pass, 166 calls at a failing biller |
+| **S03** bulk inquiry | **verdict WITHDRAWN** — batching cut it to ~2 s/pass, flat in backlog |
+| **S04** hold outstanding | no fix — **quantified** an already-accepted risk (5 min, 42 SAR, 0 notifications). Recovery after **18 h** stranded: reverted on the first pass in 8 s |
+| **S05** slow UNDER the timeout | **slow-but-working is INVISIBLE** — a 300× slowdown produces byte-identical logs |
+| **S06** 200-bill backlog | suspected cap has **no evidence** — 200 refs in one body, 0.73 s/pass, relay unaffected |
+
+⚠️ **THE LESSON, twice over: before adding a mechanism to MANAGE a cost, ask whether the cost
+can be REMOVED** (S03), **and don't build a protection a measurement has not earned** (S01,
+S06). Had the breaker been built after S02b it would have guarded a problem a design change
+was about to eliminate — **and it would have looked like it was working.**
+
+**Topic #5 is REFRAMED, not just open.** A failure-count breaker is blind to the failure
+mode that produces no failures (S05). What the evidence actually argues for is
+**instrumentation**: latency metrics on the biller client (Micrometer, topic #11), or
+Resilience4j's **slow-call** threshold — a different configuration from the one S02b argued
+for.
+
+**Findings confirmed across scenarios:**
+- **The settlement window is not a timer — it is a condition checked only when the biller
+  ANSWERS.** Falsified as a timer three times, by three failure modes (stopped process, read
+  timeout, 503). No answer → `resolve` never runs → no window → no refund. And refunding
+  anyway would destroy money: S02 showed `TIMEOUT` settling `PAID` *after* the caller gave up.
+- **The eligibility boundary MOVES during a sweep pass** (S06). `resolve` evaluates `now()`
+  per bill, so the cutoff slides forward mid-pass — 53 extra bills swept up. And **which**
+  bills is arbitrary: `findByStatus(Reserved)` has no `ORDER BY`. The notification retry job
+  orders explicitly; the bill sweep does not. **An `ORDER BY` is the one change this run
+  actually supports** — costs nothing, makes behaviour reproducible. Not built.
+- **The golden rule held in every scenario**, verified two independent ways each time.
+  Correctness comes from database constraints, not from timing — which is why no amount of
+  latency or failure has ever threatened it.
+
+### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
+
+**The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
+There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
+anywhere in the bill service — a stark contrast with `processed_events`, which has all
+three. `ELEC-972` has been swept every 10s since 27 Aug: roughly **60,000 attempts**, each a
+full HTTP round trip.
+
+**Two failures were being conflated in that sweep, and they need different handling:**
+
+| what happened | evidence | retry? |
+|---|---|---|
+| `inquire` **fails** (biller unreachable) | transient, tells you nothing | yes — this is the circuit-breaker case |
+| `inquire` **succeeds** → `NOT_FOUND` | the biller genuinely has no record | bounded — see below |
+
+**The insight (learner's, and it is the real limit).** `NOT_FOUND` cannot distinguish *"never
+arrived"* from *"arrived, still processing"* — the simulator models exactly this with
+`TIMEOUT` ("sleep past the caller's timeout, then settle PAID — it landed, you didn't hear
+back"). So reverting on the **first** `NOT_FOUND` can refund a customer for a payment the
+biller is about to settle: money destroyed from the platform's side.
+
+But **no threshold fixes it either**: any count or elapsed time is a *bet* that nothing
+arrives afterwards. `inquire` reports the biller's state at an instant, never its future.
+You can shrink the probability; you cannot reach zero. **This is not a flaw in the retry
+logic — it is a missing term in the biller's contract.**
+
+✅ **DECIDED — a settlement window.** What makes reverting safe is **agreement, not
+confidence**. If the biller commits to *"any payment I accept, I settle within N"*, then
+`NOT_FOUND` after N means *void by contract*, and the revert is correct by agreement rather
+than by hope. Real schemes work this way — and **`EODReconciliationJob` is already named
+after a contract that was never defined**: end-of-day reconciliation exists in banking
+*because* the cut-off makes the day's outcome final.
+
+Rejected: **escalate-to-human after N** (safe, but leaves customer money held indefinitely
+and does not scale) and **accept the risk with a generous timeout** (what many real systems
+do, and honest *if you know you are doing it* — but it leaves the late settlement as a
+reconciliation discrepancy).
+
+**Outcome at expiry: revert → `Rejected`.** Not a new terminal state: the money genuinely
+goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
+is — the wallet refused a settle, nobody knows where the money is.
+
+✅ **Phase 7 rider — RUN as S09 (8 Sep), and it landed harder than written.** The late
+settlement did arrive after the revert. But the sharper finding is that *"a number both
+sides agree on"* was never true: the window exists only in the bill service's config, so
+the biller settled `PAID` without any notion of it. **The golden rule held and money was
+still lost** — see `docs/sabotage/S09-late-settlement.md`.
+
+---
+
+**⚠️ SUPERSEDED SNAPSHOT (as of S04). The current Phase 7 status is the block further down —
+search `11 of ~12`.** Kept because it holds ~35 lines of S01–S06 analysis found nowhere else
+(the circuit-breaker arc, the `ORDER BY` argument, the two-independent-counts note).
+
+**▶ PHASE 7 — five scenarios run at the time of writing. Next was: S05 (biller slow but UNDER the timeout).**
+
+⚠️ **Before the next run:** the **biller simulator died mid-S04** and needs restarting. Three
+bills (`S04-001..003`, 42 SAR) are deliberately left `Reserved` as live evidence — they will
+resolve on the first sweep pass once the biller is back, which is itself worth watching.
+
+**S04 (hold outstanding, 5 Sep) — no fix, decision unchanged.** Already recorded on 3 Sep as
+an accepted residual risk and deliberately scoped out; the run **quantified** it rather than
+discovering it: *5 minutes, 3 bills, 42 SAR held, **zero** customer notifications, and one
+operator log line mentioning neither duration nor amount.* An accepted risk with numbers is
+worth more than the same risk in the abstract.
+
+**The settlement-window assumption has now been falsified three times, by three different
+failure modes** — stopped process (S01), read timeout (S02b), 503 (S04). **The window is not
+a timer; it is a condition checked only when the biller ANSWERS.** No answer → `resolve`
+never runs → no window → no refund. And refunding anyway would be wrong: S02 showed
+`TIMEOUT` settling `PAID` *after* the caller gave up, so refunding on an unreachable biller
+destroys money.
+
+**The circuit-breaker arc — the most instructive result so far.** Records in
+`docs/sabotage/`:
+
+| | result |
+|---|---|
+| **S01** biller stopped | breaker **not earned** — a dead process refuses connections in **~1 ms**; the read timeout only applies once a connection is *accepted*. A dead dependency is the *cheap* failure |
+| **S02** hung `pay` | scenario **could not test** it — `inquire()` was a bare map lookup, so the sweep was immune to biller latency. Found a real bug instead (see below) |
+| **S02b** slow on both paths | breaker **EARNED** — measured 5 × 2 s = **10 s per pass**, linear in the backlog, and **166 calls** fired at a biller already too slow to answer |
+| **S03** bulk inquiry | **verdict WITHDRAWN** — one call per pass regardless of backlog. ~2 s per pass, flat. The 166 calls would have been ~28 |
+
+⚠️ **THE LESSON: before adding a mechanism to MANAGE a cost, ask whether the cost can be
+REMOVED.** A circuit breaker manages the cost of calling a failing dependency; batching
+removed ~80% of it by making the call count independent of the backlog. **Had the breaker
+been built after S02b it would have been guarding a problem a design change was about to
+eliminate — and it would have looked like it was working.** Topic #5 stays open; the breaker
+is deliberately not built.
+
+**Other findings, confirmed by two independent failure modes:**
+- **A bill cannot expire while the biller is unreachable OR unresponsive.** The
+  settlement-window check lives inside `resolve`, and `resolve` is only called with a
+  `BillerResult` — a throwing `inquire` never reaches it. Correct (reverting with no answer
+  is reverting on no evidence) but it means customer money is held for the whole outage with
+  nothing told to them. **That is S04.**
+- **The golden rule was never at risk in any scenario.** Two independent counts agreed every
+  time. Correctness comes from database constraints, not from timing — which is why a
+  circuit breaker cannot protect it and does not need to.
+- **`RestClientException` escaped hand-written catch lists — three times.** A read timeout
+  firing while the body is read is neither `HttpServerErrorException` nor
+  `ResourceAccessException`. Fixed in the sweep and `payBiller` by catching the parent
+  **last**. Note it escaped `sweep()` entirely, so it logged with an **empty correlation
+  bracket** — `finally { MDC.remove() }` had already run.
+
+### 🔨 IN PROGRESS — bounding the sweep (decided 3 Sep)
+
+**The bug.** `bill.status = Reserved` is swept **forever** with no memory of how many times.
+There is **no `attempts` column, no cap, no terminal state for "the biller never answered"**
+anywhere in the bill service — a stark contrast with `processed_events`, which has all
+three. `ELEC-972` has been swept every 10s since 27 Aug: roughly **60,000 attempts**, each a
+full HTTP round trip.
+
+**Two failures were being conflated in that sweep, and they need different handling:**
+
+| what happened | evidence | retry? |
+|---|---|---|
+| `inquire` **fails** (biller unreachable) | transient, tells you nothing | yes — this is the circuit-breaker case |
+| `inquire` **succeeds** → `NOT_FOUND` | the biller genuinely has no record | bounded — see below |
+
+**The insight (learner's, and it is the real limit).** `NOT_FOUND` cannot distinguish *"never
+arrived"* from *"arrived, still processing"* — the simulator models exactly this with
+`TIMEOUT` ("sleep past the caller's timeout, then settle PAID — it landed, you didn't hear
+back"). So reverting on the **first** `NOT_FOUND` can refund a customer for a payment the
+biller is about to settle: money destroyed from the platform's side.
+
+But **no threshold fixes it either**: any count or elapsed time is a *bet* that nothing
+arrives afterwards. `inquire` reports the biller's state at an instant, never its future.
+You can shrink the probability; you cannot reach zero. **This is not a flaw in the retry
+logic — it is a missing term in the biller's contract.**
+
+✅ **DECIDED — a settlement window.** What makes reverting safe is **agreement, not
+confidence**. If the biller commits to *"any payment I accept, I settle within N"*, then
+`NOT_FOUND` after N means *void by contract*, and the revert is correct by agreement rather
+than by hope. Real schemes work this way — and **`EODReconciliationJob` is already named
+after a contract that was never defined**: end-of-day reconciliation exists in banking
+*because* the cut-off makes the day's outcome final.
+
+Rejected: **escalate-to-human after N** (safe, but leaves customer money held indefinitely
+and does not scale) and **accept the risk with a generous timeout** (what many real systems
+do, and honest *if you know you are doing it* — but it leaves the late settlement as a
+reconciliation discrepancy).
+
+**Outcome at expiry: revert → `Rejected`.** Not a new terminal state: the money genuinely
+goes back, and `Rejected` already means "the customer was refunded". `Failed` stays what it
+is — the wallet refused a settle, nobody knows where the money is.
+
+✅ **Phase 7 rider — RUN as S09 (8 Sep), and it landed harder than written.** The late
+settlement did arrive after the revert. But the sharper finding is that *"a number both
+sides agree on"* was never true: the window exists only in the bill service's config, so
+the biller settled `PAID` without any notion of it. **The golden rule held and money was
+still lost** — see `docs/sabotage/S09-late-settlement.md`.
+
+---
+
+**▶ PHASE 7 — ✅ 12 SCENARIOS RUN, success criterion MET. Optional extras: S11b (contract rollout order), S11c (the knife edge), kill mid-saga, flood.**
+Full records in `docs/sabotage/`; the index there is the scoreboard. Summary of what the
+runs actually bought:
+
+| run | the finding | fix |
+|---|---|---|
+| S01–S03 | three scenarios chased the circuit breaker and **none earned it** — a dead process refuses in ~1 ms, `inquire` was a bare map lookup, and S03's bulk inquiry then removed ~80% of the cost that S02b had used to earn it | **topic #5 still open, deliberately** |
+| S04 | a bill **cannot expire while the biller is unresponsive** — falsified a third time, by a third mechanism | none — quantified an accepted risk |
+| S05 | **slow-but-working is invisible**: a 300× slowdown produces byte-identical logs. A failure-count breaker cannot see it | argues for *instrumentation*, not protection |
+| S06 | the **eligibility boundary moves during a pass** (`now()` per bill), and the split is non-deterministic — no `ORDER BY` | none; an `ORDER BY` is the one supported change |
+| S07 | **the relay stopped for 39.3 s** while 7,186 notifications waited — two unrelated jobs on one scheduler thread | ✅ **first earned fix**: `scheduling.pool.size` |
+| S07b | the gap **vanished** (39.3 s → 2.0 s) rather than shrinking, and fixing it **revealed a 50 events/s relay ceiling** hidden behind the blocking | ✅ **fix proven & kept** |
+| S08 | **the outbox guarantees delivery to the BROKER, not to a consumer** — 3 messages destroyed, `sent_at` marked, zero errors, nothing recovers them | ✅ detection built (`mandatory` + returns callback); **recovery deferred past Phase 7** |
+| S09 | 🔴 **the golden rule HELD and money was still lost.** See below | none — the deepest finding so far |
+| S10 | 🔴 **the retry cap is missing where it is needed and lethal where it is not.** `attempts` never increments when the provider *throws* → frozen at 0, retries forever. Where it does increment, **5 × 5 s = 25 seconds** of provider trouble destroys a notification permanently, and `ResendingJob` never looks at a `FAILED` row again. Provider restored healthy, 8 clean passes, nothing recovered | **reconciliation EARNED** (needs *two* queries); ⚠️ **budget before counter** |
+
+### 🔴 S09 — what the invariants cannot see (run 8 Sep)
+
+The biller settled `PAID` 30 s after the settlement window had already reverted and refunded
+the bill. Afterwards: customer refunded and notified · bill service says `Rejected` · biller
+says `PAID` · wallet **perfectly balanced, zero drift**.
+
+**Every view is individually self-consistent. The inconsistency lives only in the space
+BETWEEN the systems, and nothing measures that space.** `SUM(HOLD) − SUM(SETTLEMENT) −
+SUM(RELEASE)` and the suspense balance are both derived from the wallet's own ledger — two
+counts of the same book. They cannot disagree about money the book does not know about.
+**A second "independent" count that shares a source is not independent.** The platform now
+owes the biller 77 SAR and no record of that debt exists anywhere.
+
+Second finding: the settlement window is **a contract only one side knows about**.
+`biller-settlement-window-ms` lives in the bill service's config; the biller has never heard
+of it. It was introduced to replace a guess with an agreement, and the agreement was never
+actually made — **a unilateral timeout wearing a contract's clothes.**
+
+**Consequence for the sweep:** `EODReconciliationJob` asks the biller about bills *it already
+knows are unresolved*. It never asks *"what do you think you settled that I don't?"* — which
+is what settlement reconciliation is, and the only check that would catch this.
+**Recorded as a residual risk with a measured example, not fixed.**
+
+**S01 (biller down 5 min) — the two original findings, kept because they still hold:**
+
+1. **A bill cannot expire while the biller is unreachable.** The settlement-window check
+   lives inside `resolve`, which is only called with a `BillerResult` — when `inquire`
+   throws, `resolve` never runs and the window is never consulted. Correct (reverting with
+   no answer is reverting on no evidence) but weaker than assumed.
+2. **🔴 The scenario falsified its own premise.** Written expecting each call to burn a full
+   2 s timeout; measured **~1 ms**. A stopped process sends TCP RST, so the connection is
+   *refused*. **A dead dependency is the cheap failure; a hung one is expensive.**
+
+Golden rule verified after every run — two counts, zero drift, ten times.
+
+**Three scenarios already found by building, not by imagining:**
+1. **Circuit breaker (closes topic #5).** Biller down 5 min. The EOD sweep is **serial** —
+   `fixedDelay` waits for completion and each `inquire` burns the full 2s timeout, so *N*
+   stranded bills cost *N* × 2s per pass and the sweep stops keeping up with its own
+   interval. Predict, watch it burn, then add Resilience4j as the fix the scenario earned.
+2. **The silent drop.** Measured live: `publish_in 79` vs `publish_out 72` — seven messages
+   accepted by the exchange and routed nowhere, no error, and an **outbox reporting
+   success**. Break a binding and watch it. (`publish_in − publish_out` is a Phase 8
+   dashboard metric; the loud fix is publisher confirms + `mandatory`.)
+3. **Stranded bills — two are in the database right now.** A payment whose biller call never
+   landed is **invisible to the sweep**: it inquires, gets `NOT_FOUND`, does nothing,
+   forever. The sweep can only resolve bills the biller knows about. Argues for a
+   "reserved longer than N" alert the sweep cannot itself provide.
+
+**Done since rev 9:** ledger transaction types (V13–V19, `NOT NULL`), `hold`/`settle`
+endpoints with the discharge invariants, bill service switched onto them and reconciling
+on a structured 409, hold-lifecycle notifications suppressed, bill outbox table + write.
+
+🔄 **Two decisions taken 31 Aug — see the ◀ NEXT block for the full reasoning:**
+1. **The four-services gate is DROPPED.** Sabotage runs in **September on the three-service
+   system**; history #4 is parked to the Kafka project by v2.2 and gets its own addendum.
+2. **Circuit breakers are sabotage-driven, not pre-built.** Topic #5 closes *inside* Phase 7,
+   as the fix a "biller down for five minutes" scenario earns. No Resilience4j before then.
 
 *(The rest of this section is the history of how #3 and traceability were built. The
 decision point is the ◀ NEXT block further down.)*
@@ -286,16 +640,33 @@ across a service boundary (history #4 via CDC would hardcode "account 004 = bill
 cannot distinguish flows that share a shape, it discards intent that was known at write
 time, and every consumer re-implements the same mapping and drifts.
 
-**DECIDED — money-movement kinds, not products.** The wallet never learns what a "bill" is:
+**DECIDED — money-movement kinds, not products.** The wallet never learns what a "bill" is.
 
-| kind | movement | flow |
-|---|---|---|
-| `DEPOSIT` | outside → customer | top-up (`001 → customer`) |
-| `WITHDRAWAL` | customer → outside | withdraw (`customer → 002`) |
-| `TRANSFER` | customer → customer | P2P |
-| `HOLD` | customer → suspense | bill reserve |
-| `SETTLEMENT` | suspense → beneficiary | bill capture |
-| `RELEASE` | suspense → customer | bill reversal |
+### The seven transaction types
+
+| type | movement | written when | endpoint |
+|---|---|---|---|
+| `DEPOSIT` | `001` → customer | money enters the platform (gateway confirms a top-up) | `/top-up` |
+| `WITHDRAWAL` | customer → `002` | money leaves the platform toward another bank | `/withdraw` |
+| `TRANSFER` | customer → customer | a completed P2P inside the platform | `/betweenWallets` |
+| `HOLD` | customer → `003` | funds earmarked, outcome not yet known | `/hold` |
+| `SETTLEMENT` | `003` → `004` | the beneficiary confirmed — the hold is discharged **outward** | `/settle` |
+| `RELEASE` | `003` → customer | the beneficiary declined — the hold is discharged **back** | `/revers` on a `HOLD` |
+| `REVERSAL` | opposite of the original | an undo of anything that was **not** a hold | `/revers` on anything else |
+
+**Why each exists — the distinctions that are load-bearing:**
+
+- **`HOLD` vs `TRANSFER`.** A hold models *uncertainty over time*: the customer has committed but the outcome is unknown, so the money belongs to neither party and something must later resolve it. A transfer has no such gap — it is settled the instant the row commits. **Do not route P2P through suspense**: it would split one row into two, lose the per-row conservation guarantee (`debited + credited = 0`), and invent a stranded-funds failure mode that cannot exist today.
+- **`SETTLEMENT` vs `RELEASE`.** The two ways a hold ends — outward to the beneficiary, or back to the customer. Both consume the hold; they differ only in destination. Keeping them distinct is what makes
+  `SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = **money currently in suspense**, answerable from the wallet alone, without asking the bill service.
+- **`RELEASE` vs `REVERSAL`.** `RELEASE` is deliberately narrow: *only* money leaving suspense. Broadening it to mean "any undo" would pull reversed transfers and reversed deposits — which never touched suspense — into the held-money query and silently corrupt it. `REVERSAL` therefore covers every other undo, with `reverses_entry_id` saying *what* was undone. Rejected alternatives: one `REVERSE_DEPOSIT`-style value per reversible kind (doubles the vocabulary, most values never occur), and typing a reversal as its original kind (then `count(TRANSFER)` silently counts undos unless every query remembers `WHERE reverses_entry_id IS NULL`).
+- **`SETTLEMENT` is a liability movement, not an outbound payment.** `004` is "money we owe billers", not the biller's bank. Real payout would be a separate netting run — out of scope, but the model is already shaped correctly for it.
+
+**Assignment rule:** every endpoint hardcodes its own type server-side — unforgeable, and the
+controller never handles a `TransactionType`. `/revers` is the sole exception: it **derives**
+the type from the entry being reversed (`HOLD → RELEASE`, else `REVERSAL`), so it must load
+the original first.
+
 
 Immediate payoff: `SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = money currently held.
 On today's data that is **4**, while the bill service reports **5** bills `Reserved` —
@@ -323,37 +694,408 @@ History #4 consumes wallet *and* bill events and joins them on the correlation i
 the service that knows it. Copying the biller code into the ledger would create two sources
 of truth for one fact.
 
+✅ **Wallet endpoints done and verified end to end.** `/hold` and `/settle` added to
+`LedgerEntryController`; every endpoint assigns its own type server-side except `/revers`,
+which derives it from the entry being reversed. `/settle` takes **only** the hold's
+`entryId` — the wallet supplies the beneficiary account *and reads the amount from the
+hold*, so settling a different amount than was held is impossible by construction rather
+than merely forbidden.
+
+Verified against a live wallet: `HOLD` → `SETTLEMENT` (with `settles_entry_id`), a second
+settle of the same hold → **409** from `uq_entry_discharged_once`, settling a non-hold →
+**400**, and `/revers` on a hold → `RELEASE` with `reverses_entry_id`. Both discharge paths
+land in the correct column, so the held-money query stays meaningful.
+
+⚠️ **Bug found while testing, now fixed:** the catch-all `@ExceptionHandler(Exception.class)`
+was swallowing Spring's own well-classified exceptions and returning **500** for every
+client mistake — a blank field, a missing `Idempotency-Key`, malformed JSON. Callers could
+not distinguish "your request was bad" from "the wallet is broken", which is exactly the
+distinction the bill service branches on. Added explicit handlers for
+`MethodArgumentNotValidException`, `MissingRequestHeaderException` and
+`HttpMessageNotReadableException`, all returning **400**. Two related lessons: an
+`@ExceptionHandler` returning **`void` yields 200 OK**, silently converting a rejected
+operation into a reported success; and a client-facing `detail` must be built from
+`getBindingResult().getFieldErrors()`, never from `getMessage()`/`getParameter()`, which
+dump controller signatures, DTO class names and Spring's internal message codes to the caller.
+
+✅ **A 409 now carries what the caller needs to recover.** Found while wiring the bill
+service: `/settle` can return 409 for **two opposite reasons** — a duplicate idempotency key
+(the same request replayed, safe to treat as success) or `uq_entry_discharged_once` (the
+hold was discharged by something else). Indistinguishable by status alone, and the second
+has a dangerous case: a hold that was **released** (money already back with the customer)
+would be read as "settled" and the bill marked `Paid`.
+
+Deferring it to the EOD sweep does not work — the sweep would re-inquire, re-capture, hit
+the same 409, and loop forever, leaving the bill permanently `Reserved`. The poison-row
+problem, in the bill service.
+
+Fix: `settle` pre-checks `findEntryByHoldId` and throws `HoldAlreadyDischargedException`
+carrying **the hold id, the discharging entry id, and its type**, surfaced as
+`ProblemDetail` properties. The bill service reads `dischargeType` and reconciles in the
+same call — `SETTLEMENT → Paid`, `RELEASE → Rejected` — with no extra round trip and no
+biller inquiry. Verified both paths live.
+
+**Principle:** an error response should carry what the caller needs to recover. A bare 409
+says "no" and leaves them stuck; one that says *"released by entry X"* tells them exactly
+what to do.
+
+**Two supporting lessons:** the pre-check produces a *good error*, the unique index provides
+the *guarantee* — check-then-act races, so both are needed. And the query uses `@Query` with
+`coalesce(...)` rather than a derived `...OrSettlesEntryId` method, because only the
+`coalesce` form matches `uq_entry_discharged_once`; the derived version would seq-scan. The
+integrity constraint doubles as the lookup index.
+
+✅ **Bill service now speaks in domain terms.** `reserve` → `/v1/transfer/hold`,
+`capture` → `/v1/transfer/settle` taking the **hold's entry id** (the value `reserveFunds`
+already stored and used to discard). `SUSPENSE_ACCOUNT`, `Biller_ACCOUNT` and the generic
+`transfer()` are deleted — the bill service no longer knows the wallet's account numbering.
+
+**Every branch out of `capture` reaches a terminal bill state**, which is what stops the
+sweep looping: 409 with no properties (duplicate key) and 409 with `dischargeType
+SETTLEMENT` both **return normally** — same outcome as success, and an exception whose
+handler does nothing different is a liability, because forgetting to catch it strands the
+bill. Only `RELEASE` throws. A 400 throws `SettleRejectedException` → new **`Failed`**
+status (bill-service `V2`), *not* `Rejected`: `Rejected` implies the customer was refunded
+(the FAILED path reverses first), while a refused settle leaves the hold intact, so
+`Rejected` would lie about where the money is.
+
+**Verified end to end**, including the race this was all for: biller settles but the caller
+times out (simulator `TIMEOUT` mode), the hold is released behind the bill service's back,
+the sweep then inquires and captures → wallet answers 409 `dischargeType RELEASE` → bill
+becomes **`Rejected`**. Previously `capture` swallowed the 409 and `resolve` set `Paid`
+unconditionally, so the bill would have claimed payment while the customer had their money
+back and the biller had never been paid.
+
+🧹 **Stranded test data cleaned (2026-08-27).** 6 bills sat `Reserved` from sessions where
+the biller was down; the simulator had no record of them so `NOT_FOUND` meant the sweep
+could never resolve them. All five outstanding holds were released **through the API**
+(never by editing the ledger) and the bills reconciled to `Rejected`. Sweep working set is
+now empty.
+
+⚠️ **The cleanup left a trap for the backfill.** `revers` derives its type from the target,
+and four of those holds predate `V13`, so their discharges were typed **`REVERSAL`**, not
+`RELEASE`. Once the backfill types those holds as `HOLD`, the held-money identity
+`SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` gains +4,050 that is never subtracted.
+**The backfill must type discharge rows by account movement too** (`003 → customer` is a
+`RELEASE`), not merely fill nulls on holds.
+
+*(This also proved the backfill's value: "held total" read **75** while 4,050 was genuinely
+held, because untyped rows are invisible to `SUM(HOLD)` — a 98% undercount.)*
+
+✅ **THREAD COMPLETE — the ledger is fully typed.** `V16` backfilled all 57 untyped rows
+by account-movement derivation, `V17`/`V18`/`V19` contracted `transaction_type` to
+`NOT NULL`. All six endpoints verified live, each producing its correct type — every value
+in the vocabulary is now reachable from a running endpoint.
+
+**Two design choices inside the backfill worth keeping:**
+
+*No `ELSE` on the `CASE`.* An unmatched account pair stays `NULL`, so the later
+`SET NOT NULL` **fails loudly** rather than letting a mislabelled row through. `ELSE
+'TRANSFER'` would have been the `routing_key` trap again — a plausible guess, quietly
+believed. Fail-closed for free.
+
+*`TRANSFER` detected via `wallet.is_internal`, not account-number patterns.* Matching on
+`'0000000000%'` would have re-introduced the exact coupling this whole thread removed. Took
+three attempts to land: the first subquery was **uncorrelated** (asked "do any internal
+wallets exist?" → always true), the second was correlated but omitted `is_internal` (asked
+"does a wallet exist for either side?" → always true, guaranteed by the FKs). The test for
+a correlated subquery: *would it give a different answer for a different outer row?*
+
+**The cleanup trap was real and is closed:** four discharge rows typed `REVERSAL` (their
+targets predated V13) were corrected to `RELEASE` in the same migration. Held-money identity
+now reads **0**, which is correct — every outstanding hold was released during cleanup.
+
+⚠️ **Two ways to measure held money now disagree, and only one is right.**
+`SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE)` = **0** ✅, while the reference-based query
+(*"holds nothing discharges"*) still reads **6,025** — four pre-constraint rows took money
+out of suspense without recording `settles_entry_id`, and that link cannot be
+reconstructed. **Counting by type survives incomplete history; counting by reference only
+works where the reference was always written.** Build reporting on the type identity.
+
+🧹 **Optional tidy, not done:** `ck_ledger_transaction_type_not_null` and
+`reverses_entry_id_unique` are now scaffolding — superseded by `attnotnull` and
+`uq_entry_discharged_once` respectively.
+
+✅ **Notification ownership decided — `TransactionType.isCustomerFacing()`.** The wallet
+now suppresses events for the whole **hold lifecycle** (`HOLD`, `SETTLEMENT`, `RELEASE`);
+`DEPOSIT`, `WITHDRAWAL`, `TRANSFER` and `REVERSAL` still notify.
+
+**The rule: the service that knows *why* the money moved owns the message.** The wallet can
+only say "you received 55 SAR"; the bill service can say "your SEC bill couldn't be paid —
+you've been refunded". So `bill.rejected` belongs to the bill service, not to the wallet's
+`RELEASE`.
+
+Before this, a bill payment notified the customer at **reserve** — and that message could be
+outright wrong, since a declined biller returns the money that was already announced as
+sent. Now a full bill payment (`HOLD` + `SETTLEMENT`) and a full refund (`HOLD` + `RELEASE`)
+each produce **zero** wallet events. That is a gap made *visible*, not created: it is exactly
+what the bill service's own events will fill, and it guarantees the customer gets **one**
+message per bill rather than two.
+
+Implemented as a method on the enum rather than an exclusion list in `WalletService`,
+because a `switch` over all seven constants with **no `default`** means adding an eighth type
+fails to compile until someone answers the question. An exclusion list would have let a new
+type inherit "notify" silently.
+
+⚠️ **Consequence of the accepted `HOLD`-means-bill risk, now concrete:** the wallet cannot
+tell a bill-originated hold from any other — by design, since it never learns what a bill is.
+So **all** releases are suppressed, and any future flow that creates holds inherits the
+obligation to publish its own events. A hold released by an ops correction currently
+notifies nobody. Rejected: passing a "notify" flag into `/revers` (puts a notification
+concern into a money API, and a caller can get it wrong).
+
+✅ **DECIDED — `Failed` publishes no customer event.** The bill outbox carries exactly two
+types: `bill.payment.paid` and `bill.payment.rejected`.
+
+`Failed` means the wallet refused the settle as invalid — never a business outcome, always
+the bill service having asked for something impossible. It requires manual intervention, and
+a customer cannot act on "we do not know where your money is"; such a message invites a
+support call that cannot be answered. It gets an **ops signal** (ERROR log, later an alert),
+not an SMS.
+
+⚠️ **`Failed` is reachable, and the path is crash recovery — worth testing in Phase 7:**
+
+    reserve → wallet commits the hold
+            → bill service crashes before saving the bill
+    retry   → same reserve key → wallet returns 409 duplicate
+            → WalletClient.reserve's onStatus(409) swallows it
+            → .body(TransferResponse.class) has no TransferResponse to map (the
+              duplicate response body is EMPTY — verified)
+            → entryId null → bill saved Reserved with entry_id null
+            → capture(null) → 400 → Failed
+
+The empty-body-on-duplicate behaviour was confirmed against the running wallet. Three bills
+already carry a null `entry_id` (those are legitimately from the reserve-declined path, but
+they show the column does go null). **The 409 swallow in `reserve` deserves the same
+treatment `capture` got** — it currently discards a response it then tries to deserialise.
+
+🔨 **IN PROGRESS — bill outbox.** ✅ `V3` (table + partial index) and `V4` (`cif` column)
+applied · ✅ entity, repository, `PaymentEvent` payload · ✅ **cif carried from the wallet's
+hold response** · ✅ **transactional write on every resolved outcome**.
+⏳ **NEXT: the relay job** — the bill service has no AMQP wiring at all yet (no
+`spring-boot-starter-amqp`, no `spring.rabbitmq.*`, no exchange bean), so that is the setup
+step before the job itself. Then the notification-side binding and message text.
+
+**cif resolved (b): the wallet returns it at reserve time.** `/hold` gets its own
+`HoldResponse` rather than a `cif` field on the shared `TransactionResponse`, because "the
+cif" is ambiguous on the other five endpoints (a P2P has two customers, a settlement none).
+Stored on the `bill` row because the outbox event is written in `resolve`, possibly minutes
+later via the sweep, by which point the reserve response is gone — the same reason the
+correlation id is a column. Rejected: deriving `cif` from the wallet number by substring
+(puts the wallet's numbering format in the bill service, fails silently if the prefix width
+changes), and having notifications resolve it (couples delivery availability to the wallet,
+adds a failure mode to a path with a retry budget, repeats the lookup on every retry).
+
+**`cif` is not a constructor argument** — it is unknown when `createPayment` runs and
+arrives with the hold response alongside `entryId`. A constructor should take what is known
+at construction.
+
+⚠️ **Pre-existing cross-service bug found by exercising the reverse path:** bill sent
+`original_entry_id` while the wallet expects `originalEntryId`, so Jackson read **null** and
+the wallet answered 404 for an entry with a null id. The resulting
+`HttpClientErrorException` is *not* caught by `payBiller` (which catches only
+`HttpServerErrorException` and `ResourceAccessException`), so it escaped into `@Async`, was
+dropped by Spring's uncaught handler, and left the bill `Reserved` to be swept forever — a
+poison row. **Mocked tests cannot catch this class of defect**, since they stub the client
+and never check the wire format. Still open: `payBiller` catching only two specific
+exception types means any *other* HTTP error silently strands a bill.
+
+**Verified all four paths:** `Paid` → `bill.payment.paid`; declined biller →
+`bill.payment.rejected`; biller has no record → stays `Reserved`, no event; and the wallet
+writes **nothing** for any of them. One row, one eventual notification per bill payment.
+During testing one bill was recovered by the **EOD sweep**, carrying a
+`reconciliation-bills-` correlation id rather than the original request's — the run-id
+versus flow-id distinction visible in real data.
+
+**Transaction boundary — decided, and the learner was right.** `resolve` must **not** be
+`@Transactional`: it makes a synchronous HTTP call to the wallet with a 2-second timeout
+that is not ours, and wrapping it would tie a pooled DB connection to someone else's
+latency. But the outbox guarantee still needs the status change and the event row to commit
+together. The resolution is in the **ordering** — the HTTP call happens *first*, then the
+writes:
+
+    1. walletClient.capture(...)     ← HTTP, OUTSIDE any transaction
+    2. bill.setStatus(...)           ┐
+    3. billRepository.save(bill)     ├ one @Transactional method
+    4. write the outbox event        ┘
+
+⚠️ Extract 2–4 onto a **separate bean**. `this.persistOutcome(...)` is self-invocation, which
+bypasses the proxy and silently gives no transaction at all — §9, hit three times already.
+
+**Open question for the payload:** the notification service needs a `cif` (contact details
+are looked up fresh at delivery time, never snapshotted). `Bill` stores `wallet_number`, not
+`cif`. Either derive it (wallet numbers are `%02d` + cif) or carry the wallet number and let
+notifications resolve it — decide deliberately.
+
 ⚠️ **Known residual risks, accepted:**
 - `HOLD` currently means "bill" only because the bill service is the sole caller. Add
   merchant payments later and it becomes ambiguous, with no way to re-derive history.
 - **Nobody records the destination bank** for a withdrawal — one generic `Outward Transfer`
   account for all outbound money. Fix is per-bank internal accounts (the credited account
   identifies the bank), not a new column. Parked deliberately.
+- ⚠️ **Orphan holds have nothing to expire them** (found 3 Sep). The settlement-window
+  expiry lives in `BillService.resolve`, so it only ever runs for **bills**. A hold placed
+  directly through `POST /v1/transfer/hold` — a future merchant flow, an ops action, a
+  manual test — sits in suspense **forever**, with no owner and no expiry. There is one in
+  the database right now: `held in suspense: 12`, from a probe, which will never clear.
+  **The generalised risk: the expiry policy lives in the CALLER, so any caller that does
+  not implement one strands customer money.** This is the concrete consequence of the
+  `HOLD`-means-bill risk above. Two candidate fixes, neither built: give the wallet its own
+  sweep for holds older than N with no discharge (the wallet owns the money, so arguably it
+  should own the backstop), or require every hold-creating flow to register an owner that
+  can be asked. **The wallet-side sweep is the safer default — it is a backstop that does
+  not depend on callers behaving.**
 
-**Build order:** `V13` nullable `varchar(20)` + `CHECK` → endpoints assign it →
+**LATE ADDITION — `settles_entry_id` + a discharge invariant.** Found while checking
+whether settlements were traceable: `RELEASE` rows link back via `reverses_entry_id`, but
+**`SETTLEMENT` rows link to nothing** — `WalletClient.capture(amount, idempotencyKey)`
+never passes the hold's entry id, even though `BillService.resolve` is holding
+`bill.getEntryId()` right there. So the wallet's own ledger cannot say which hold a
+settlement discharged; the relationship exists only in the bill service.
+
+Fix mirrors the existing pattern: `settles_entry_id` alongside `reverses_entry_id`. But a
+plain `UNIQUE` on each leaves a hole that matters more — **nothing stops a hold being both
+settled *and* released**, two rows each satisfying its own constraint, paying the biller
+*and* refunding the customer from one hold. **Money created.** Closed with a single
+expression index instead:
+
+```
+CREATE UNIQUE INDEX ... ON ledger (coalesce(reverses_entry_id, settles_entry_id));
+```
+
+Both discharge paths now compete for one slot; the second fails at the database. Ordinary
+transfers have both columns null and `coalesce` yields null, which never conflicts in a
+unique index. **Proven**: attempting to settle an already-released hold returns
+`duplicate key value violates unique constraint`. The golden rule is now structural rather
+than something the EOD sweep and idempotency keys must be careful about. This subsumes
+`V9`'s `reverses_entry_id_unique` (redundant, harmless to keep).
+
+*(Considered and dropped: adding `correlation_id` to `ledger`. `settles_entry_id` is
+stronger for this problem — a ledger-internal relationship rather than a debugging
+breadcrumb — and it carries the uniqueness invariant a correlation id cannot.)*
+
+**Build order:** ✅ `V13` (`transaction_type` + `settles_entry_id` + `uq_entry_discharged_once`)
+✅ `V14` (`ck_one_discharge_kind`) ✅ `V15` (seven-value vocabulary) ✅ **wallet Java side done**
+→ ✅ bill service switched to the new endpoints → ✅ **V16 backfill** → ✅ **V17/V18/V19
+contract to NOT NULL** → **THREAD COMPLETE** —
 backfill by derivation (correct **once**, in a migration, never at runtime; use an honest
 `UNKNOWN` for unclassifiable pairs rather than defaulting to `TRANSFER` — the `routing_key`
 lesson) → contract to `NOT NULL`.
 
-◀ **NEXT — pick the next thread:**
-1. **Bill service publishes `BillPaid` / `BillRejected`** — notifications currently only
-   ever sees wallet events. Note the open policy question: a bill reserve already emits a
-   wallet event, so a bill payment would produce a wallet notification *and* a bill one;
-   suppression is a notifications-side call. Its outbox will need a correlation column too.
-2. **History service #4** — the last of the four; CDC/Debezium was raised as a
-   learning interest.
-3. **Phase 7 sabotage** — the *traceability gate* is now cleared, but the **build is not
-   finished**: the bill service still publishes nothing, and history #4 does not exist.
-   Sabotaging an incomplete system means repeating the pass once those land. **Finish 1
-   and 2 first**, then sabotage the whole thing once.
+◀ **NEXT — the ordered path to Phase 7 (decided 31 Aug, rev 10):**
 
-**Still missing to be feature-complete (4 services, req 5):**
-- bill → notification: no `BillPaid` / `BillRejected` events yet, so notifications only
-  ever sees wallet events. Needs its own outbox + a correlation column (V12's shape).
-- history #4: not started. Read model over wallet + bill; CDC/Debezium raised as the
-  learning angle. Will need the correlation id carried through whatever CDC path is used —
-  worth checking early, since Debezium reads the WAL and sees only columns, which is
-  another argument for the id living *in the row* rather than in memory.
+**1. ~~Finish bill → notification~~ ✅ DONE (3 Sep).** AMQP wiring · relay job ·
+`bill.payment.*` binding · `NotificationMessage` enum for the text.
+
+**Verified end to end:** one bill payment → **exactly one** customer notification, routing
+key `bill.payment.paid`, carrying the correlation id of the originating HTTP request.
+**Seven log lines across three JVMs, five threads, a database and a broker — one grep.**
+The relay's own line is bracketed `bill-relay-…` yet the grep still finds it, because the
+*business* id is in the message text and on the message: the two-ids design working in
+practice.
+
+Message text moved onto an enum because there are now **four** routing keys and a two-way
+ternary cannot express four outcomes — a paid bill would have rendered "you received a
+transaction!", and a rejected one the same. Routing keys contain dots so they cannot be
+constant names; they are a **field**, with a static lookup from wire value to constant that
+**throws** rather than returning a fallback (an unrecognised key means a producer published
+something this service was never updated for — silently shipping generic text to a customer
+is the failure worth avoiding).
+
+⚠️ **Two stranded bills observed, and both are correct.** A payment whose biller call never
+landed is **invisible to the sweep**: it inquires, gets `NOT_FOUND`, and does nothing —
+forever. **The sweep can only resolve bills the biller knows about.** Good Phase 7 material,
+and an argument for a "reserved longer than N" alert that the sweep cannot itself provide.
+
+⚠️ **Live proof of the silent-drop failure mode (2 Sep).** The bill relay publishes
+correctly, the outbox row reads `sent_at`, and **nothing consumes it** — the queue binds
+`wallet.money.*` only, so `bill.payment.paid` is accepted by the exchange and routed
+nowhere. The broker's counters showed it: **`publish_in 79` vs `publish_out 72`** — seven
+messages in, never out, no error anywhere.
+
+Two things follow. **`publish_in − publish_out` is a monitorable signal** (a persistent gap
+= unroutable messages) and belongs on the Phase 8 dashboard. And it writes itself as a
+**Phase 7 scenario: break a binding, watch the outbox happily report success.** The loud
+version is publisher confirms + the `mandatory` flag, which returns unroutable messages to
+the sender — deliberately not built yet.
+
+### ✅ DECIDED (2 Sep) — one exchange, one queue, two bindings  ·  *ADR candidate*
+
+**Exchange and queue are two separate decisions.** Splitting them dissolves the argument:
+
+**ONE topic exchange (`quickpay.events`), producers own routing-key NAMESPACES.**
+`wallet.money.*` and `bill.payment.*`. Rejected exchange-per-producer: the argument for it
+was that history #4 could then plug in with zero producer changes — but that is equally
+true of one exchange, and the shared exchange is *stronger*, because it also gives zero
+**consumer** changes when a new producer appears. With exchange-per-producer, #4 must know
+there are two exchanges today and be edited when a third arrives — more coupling, not less.
+(Exchange-per-context is real at org scale — per-exchange permissions, alternate-exchange
+policies, blast radius — but that is gold-plating here.)
+
+**ONE queue, TWO bindings.** Handling is identical, so one consumer, one retry path, one
+`processed_events` table. **Separate queues were considered and rejected as pre-solving** —
+the reviewer argued for them on Phase-7 observability grounds (independent depth = "is the
+bill flow backing up or the wallet flow?") and was talked out of it by the same rule that
+governs the circuit breaker: **fixes get earned.**
+
+⚠️ **The honest risk, deliberately left in: head-of-line blocking.** A bill-event flood or a
+poison message starves wallet notifications. **This is Phase 7 scenario material** — flood
+bill events, measure wallet notification latency, split the queues only if the evidence
+demands it. Note `@RabbitListener(queues = {a, b})` means separate queues would *not* have
+required separate listeners: queue separation buys independent depth and purge; listener
+separation buys independent concurrency. Two different things.
+
+⚠️ **Consequence — `processed_events` is now a shared dedup table across two producers.**
+Both outbox `event_id`s are **UUIDs**, so there is nothing to collide today (a raised
+concern about `bigserial` ids does not apply — verified). But if either producer ever
+switched to a sequence, the collision would be **silent** and would present as
+"notifications randomly not sent". Any new producer must keep globally-unique event ids.
+
+⏳ **Still to do on the notification side:** the `bill.payment.*` binding, and message text —
+`deliver()` resolves it from a **two-way** check on `wallet.money.sent`, and there are now
+**four** routing keys. A two-way ternary cannot express four outcomes; same shape as
+`isCustomerFacing()` on the wallet's enum.
+
+**2. Phase 7 — SABOTAGE, September, on the THREE-service system.**
+
+🔄 **DECISION REVERSED — the four-services gate is DROPPED.** The gate said "sabotage once,
+after all four services exist". That was defensible only while #4 was near. **v2.2 parks
+history #4 to the Kafka project (~May 27)**, so the gate would delay Phase 7 by nine months
+to wait for a *read model* — while the whole distributed-transaction surface is already
+built and ready to break: saga with compensation, transactional outbox, broker,
+at-least-once delivery, idempotent consumer, two reconciliation jobs, and correlation IDs
+to read it all with. **#4 gets its own small sabotage addendum when it is born** (projection
+lag, CDC lag — genuinely different scenarios, and genuinely later).
+
+**3. Phase 8 — k6 load test.** Requires a written breaking-TPS and bottleneck prediction
+before the first run.
+
+---
+
+### Topic #5 (circuit breakers) closes INSIDE Phase 7, not before it
+
+**DECIDED: sabotage-driven, not pre-built.** There is no Resilience4j in the repo — no
+retry-with-backoff, no circuit breaker. Building one now would be studying a topic in the
+abstract, which the standing rules forbid, and gold-plating, which rule 6 forbids.
+
+Instead it is a Phase 7 scenario that *earns* the fix:
+
+> **Scenario — biller (or provider) down for five minutes.** Predict first, then watch
+> every call burn its full timeout. Add the Resilience4j breaker as the fix that scenario
+> produced. Topic #5 then closes honestly, with evidence.
+
+⚠️ **Prediction hint — the EOD sweep is serial.** `fixedDelay` waits for completion and each
+`inquire` burns the full 2s timeout, so with *N* stranded bills one pass takes *N* × 2s. At
+~30 bills that is a minute, and **the sweep stops keeping up with its own interval** — a
+more visible failure than a slow request, and precisely what fail-fast + half-open fixes.
+Worth predicting the `@Async` pool behaviour too.
+
+---
+
+**Feature-complete is now THREE services + the bill event flow** (not four). History #4 is
+no longer a Stage-1 dependency; when it does arrive it will need the correlation id carried
+through whatever CDC path is used — Debezium reads the WAL and sees only columns, which is
+another argument for the id living *in the row* rather than in memory.
 
 Shape: `@Scheduled`, **two queries** — one per channel, each matching one of V1's partial
 indexes — merged by `message_id` so a row needing both channels is not processed twice and
@@ -887,6 +1629,16 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-09-09 | **S12 — duplicate, and PHASE 7 IS COMPLETE (12 scenarios).** The category with zero prior coverage, attacked at four seams with 20 concurrent duplicate requests. **Money held perfectly to the digit**: ledger +6 rows exactly, both balances exactly as arithmetic predicts, zero drift, not one double charge. 🟢 **The project's thesis measured directly** — in the races, every code-level check caught **0 of 10** (all ten passed `existsByIdempotencyKey`'s check-then-act window) while the DB constraints caught **9 of 9**. Code checks are latency optimisations; the constraints are the guarantee. 🔴 **The finding:** ten concurrent settles on one hold produced nine `400 insufficient balance` — **neither guard built for this fired.** Not the discharge check (all ten passed it), not `uq_entry_discharged_once` (never reached). What stopped them was the **suspense account running out of money**. Money safe, diagnosis actively misleading, and **state-dependent**: with more money in suspense the same fault would report 409. *The invariant that protects the money is not the one that explains it.* Also: the two duplicate paths return different bodies under the same 409. **Open design question recorded — reject vs replay:** the wallet rejects a duplicate, so a client that timed out still cannot learn whether its money moved. NEXT ACTION → Phase 8 (k6 load test, needs a written breaking-TPS prediction), or the optional extras. |
+| 2026-09-08 | **S11a — the biller enforces the settlement window; S09's divergence is gone.** Gave the biller the same 60 s number; past it, it refuses and stores nothing, so `inquire` returns `NOT_FOUND` and the existing `resolve` reverts. Same setup as S09 — biller decides at T+90 — and the only digit that changed is the one that matters: `biller_settled` **1 → 0**. Bill `Rejected`, customer refunded and notified, biller holds no record. **No application code was touched:** `resolve`, the sweep, the wallet and the window value are byte-identical to S09. A one-sided timeout became a two-sided contract and the loss vanished. First run in the project where "the golden rule held" is checked **externally** as well as internally — platform-paid 0, biller-received 0, **difference 0 SAR**. S09's prediction 3 (*"if the biller sticks with the agreement then yes it will hold"*) is finally **confirmed**; it took two scenarios because S09's biller had never heard of the agreement. ⚠️ **Still open, raised by the learner:** the contract has a number but **no anchor** — the bill service measures from `bill.created_at`, the biller from request arrival, so its window closes strictly later and both can honour "60 s" while disagreeing. The real fix is `expiresAt` **transmitted in the pay request** (one clock, one anchor) — application code, not scaffolding. Reviewer error recorded: the first attempt used `delayMs`, which slows `inquire` too, stranding the bill and reproducing S01/S04 instead; fixed by making `timeoutSleepMs` runtime-settable. NEXT ACTION → S11b or S11c. |
+| 2026-09-08 | **S10 — consumer-side loss, the layer past S08's fix.** Arm A: a bill paid for a cif the notification service does not own. Money moved, event routed and delivered, listener dropped it 26 ms later with one WARN; bill outbox says `sent_at`, queue depth 0, **zero UNROUTABLE lines — `mandatory` is structurally blind to this**. The unpredicted finding: `processed_events.message_id` **is** the bill outbox `event_id`, so a set difference needs no new schema — run for the first time it retroactively identified **all 10 message losses in the project's history**, including the 3 S08 destroyed and the 2 from the S08b verification. Arm B: `attempts` never increments when the provider *throws* (frozen at 0 across 12 passes, unbounded retry), but where it does increment **`maximum-retries: 5` × `resend-interval: 5 s` = 25 seconds destroys a notification permanently** — `ResendingJob` only queries `PENDING`, so a `FAILED` row is never revisited; provider restored to healthy, 8 clean passes, neither row recovered. ⚠️ **Fix ordering is itself the finding:** moving the `attempts` increment before fixing the retry budget would convert an unbounded retry into *guaranteed* permanent loss in 25 s. And arm A's reconciliation is blind to arm B — missing rows and terminal-`FAILED` rows are different loss classes; 11 `FAILED` rows exist, **9 undetected since August**. NEXT ACTION → S11, or the retry-policy decision. |
+| 2026-09-08 | **S09 — the golden rule held and money was still lost.** The biller settled `PAID` 30 s after the settlement window had already reverted and refunded the bill. Customer refunded and notified, bill service says `Rejected`, biller says `PAID`, wallet perfectly balanced with zero drift. **The finding is about what the invariants can see:** the held-money identity and the suspense balance are both derived from the wallet's own ledger — two counts of the same book — so they cannot disagree about money the book does not know about. A second "independent" count that shares a source is not independent. Second finding: the settlement window is **a contract only one side knows about** — it lives in the bill service's config and the biller has never heard of it, so it is a unilateral timeout wearing a contract's clothes. `EODReconciliationJob` asks about bills it already knows are unresolved; it never asks the biller *"what did you settle that I don't have?"*. Recorded as a **residual risk with a measured example, not fixed**. NEXT ACTION → S10 (consumer-side loss). |
+| 2026-09-07 | **S07b and S08 — the first two fixes of Phase 7, one proven and one half-built.** S07b: `scheduling.pool.size: 2` made the relay's 39.3 s stall **vanish** (2.0 s max gap, zero duplicates across 20,297 `message_id`s) rather than merely shrink — and removing the blocking **revealed a 50 events/s relay ceiling** that had been invisible behind it. S08: deleting a binding proved **the outbox guarantees delivery to the BROKER, not to a consumer** — RabbitMQ accepts and discards, the relay logs nothing, marks `sent_at`, and restoring the binding recovers nothing. Money never at risk across ten runs; *the invariants protect money, nothing protects the customer's knowledge.* Built and verified the **detection** half (`mandatory` + `publisher-returns` + a returns callback naming the `event_id`), on both the bill and wallet relays; **recovery — unmarking `sent_at` so the relay retries — deliberately deferred past Phase 7**, with the retry bound to be decided before any code is written. |
+| 2026-09-03 | **THE BUILD IS DONE — bill → notification verified end to end.** AMQP wiring, relay job, `bill.payment.*` binding, `NotificationMessage` enum. **One bill payment → exactly one customer notification**, carrying the correlation id of the originating HTTP request; **seven log lines across three JVMs, five threads, a database and a broker, from one grep.** Decisions: one exchange with producer-owned routing-key namespaces (exchange-per-producer would force consumers to enumerate exchanges — more coupling, not less); one queue, two bindings (separate queues rejected as pre-solving head-of-line blocking — earned in Phase 7, not assumed). Message text moved to an enum because four routing keys cannot fit a two-way ternary; the lookup **throws** rather than shipping generic text. **NEXT ACTION → Phase 7 sabotage**, with three scenarios already collected. |
+| 2026-08-31 | **Bill outbox writes.** `V3` table + `V4` cif column; events written transactionally on every resolved outcome; `Failed` writes none (needs manual intervention — a customer cannot act on "we do not know where your money is"). Transaction boundary decided: HTTP **outside**, writes **inside**, on a separate bean because `this.method()` bypasses the proxy. Found a pre-existing cross-service DTO mismatch (`original_entry_id` vs `originalEntryId`) that made every reverse 404 and strand bills — the class of defect mocked tests cannot catch. **Relay next; the bill service has no AMQP wiring yet.** |
+| 2026-08-28 | **Notification ownership decided.** Wallet suppresses the whole hold lifecycle via `TransactionType.isCustomerFacing()`. Rule: *the service that knows why the money moved owns the message.* A bill payment now produces **zero** wallet events, so the customer gets **one** message, from the bill service. |
+| 2026-08-27 | **Bill service speaks hold/settle**, and no longer knows the wallet's account numbering. A 409 now carries the discharge type so the bill reconciles in the same call — `SETTLEMENT → Paid`, `RELEASE → Rejected`. Deferring that conflict to the sweep would have looped forever. New `Failed` status: `Rejected` implies the customer was refunded, which a refused settle does not. |
+| 2026-08-24 | **Ledger transaction types complete** (V13–V19). Seven money-movement kinds, `NOT NULL`, assigned server-side by endpoint. Two discharge invariants — `ck_one_discharge_kind` (a row is a reversal XOR a settlement) and `uq_entry_discharged_once` (a hold is discharged once, either way). The first exists because the learner found the `coalesce` index defeated by a row setting both columns. `settles_entry_id` added after the learner asked whether `entry_id`/`reverses_entry_id` already covered it — they did not, and settlements linked to nothing. |
 | 2026-08-15 | **Traceability complete (Bucket D)** — correlation ids now span inbound/outbound HTTP, `@Async`, `@Scheduled`, the outbox (V12/V14) and AMQP, across all three services. Landed ahead of Phase 7 as planned. Key lessons: MDC is per-thread so every boundary needs its own copy mechanism and a *time* gap can only be crossed by persistence; run-id vs item-id must never be conflated; diagnostics fail open (nullable columns + a length cap at the edge, or a header rolls back a transfer); and the plumbing is worthless without log lines — a grep returned one unrelated warning until three boundary `INFO`s were added. Verified: one transfer → five lines, two JVMs, four threads, one broker, one grep. NEXT ACTION → bill events, history #4, or Phase 7. |
 | 2026-08-11 | **Service #3 complete.** Retry job (`ResendingJob`) built and verified. **Volume test settled the open index question**: at 500k rows / 50 pending, the partial index is 16 kB and serves the live job's bind-parameter query (0.024 ms vs 55 ms seq scan); a *forced* generic plan does fall back to a 119 ms seq scan, so the protection is the cost gap, not a guarantee. Key insight: the index's biggest win is the **idle** poll, not the busy one — `fixedDelay` runs forever whether or not there is work. Retry maths validated (0.3 failure rate × 5 attempts → predicted 0.24 permanent failures, observed exactly 1). Then **V10–V13 finished the schema**: state columns `NOT NULL`, dual-writing stopped, entity fields removed, booleans and three scaffolding CHECKs dropped. Verified end to end after the drop. Decision: `last_attempt_at` stays audit-only, **no backoff**. NEXT ACTION → pick between bill-service events, correlation IDs, or history #4. |
 | 2026-08-10 | **Terminal state added** (V7 `varchar`+`CHECK`, V8 three-branch `CASE` backfill, dual-write in `deliver()`). Root cause named: a boolean cannot distinguish *pending* from *gave up*, so the partial index could never shed dead rows and `attempts` incremented forever. Rejected along the way: a native PG enum (breaks Hibernate varchar binding — reproduced), `attempts` in the index predicate (couples schema to config, fails asymmetrically and silently), and archiving delivered rows (re-opens duplicate sends — the dedup ledger's lifetime is a *time* question, not a status one). Contract steps V9–V11 + index switch still owed. |

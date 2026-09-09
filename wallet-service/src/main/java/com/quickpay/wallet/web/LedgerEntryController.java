@@ -1,23 +1,15 @@
 package com.quickpay.wallet.web;
 
 import com.quickpay.wallet.domain.LedgerEntry;
-import com.quickpay.wallet.dto.request.ReversRequest;
-import com.quickpay.wallet.dto.request.TopUpRequest;
-import com.quickpay.wallet.dto.request.TransferRequest;
+import com.quickpay.wallet.dto.request.*;
+import com.quickpay.wallet.dto.response.HoldResponse;
 import com.quickpay.wallet.dto.response.TransactionResponse;
+import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.service.WalletService;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.HexFormat;
 
 @AllArgsConstructor
 @RestController
@@ -29,25 +21,37 @@ public class LedgerEntryController {
 
     @PostMapping("/betweenWallets")
     public ResponseEntity<TransactionResponse> transferBetweenWallets(@RequestBody @Valid TransferRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
-        LedgerEntry entry = walletService.transfer(request.debitedWalletNumber(), request.creditedWalletNumber(), request.amount(), idempotencyKey,null);
+        LedgerEntry entry = walletService.transfer(request.debitedWalletNumber(), request.creditedWalletNumber(), request.amount(), idempotencyKey,null,null, TransactionType.TRANSFER);
         return ResponseEntity.ok(new TransactionResponse(entry.getEntryId(),entry.getIdempotencyKey()));
     }
 
     @PostMapping("/top-up")
     public ResponseEntity<TransactionResponse> topUp(@RequestBody @Valid TopUpRequest request,  @RequestHeader("Idempotency-Key") String idempotencyKey){
-        LedgerEntry entry = walletService.topUp(request.wallet_number(), request.amount(),idempotencyKey);
+        LedgerEntry entry = walletService.topUp(request.walletNumber(), request.amount(),idempotencyKey);
         return ResponseEntity.ok(new TransactionResponse(entry.getEntryId(),entry.getIdempotencyKey()));
     }
 
     @PostMapping("/withdraw")
     public ResponseEntity<TransactionResponse> withdraw(@RequestBody @Valid TopUpRequest request,  @RequestHeader("Idempotency-Key") String idempotencyKey){
-        LedgerEntry entry =  walletService.withdraw(request.wallet_number(), request.amount(),idempotencyKey);
+        LedgerEntry entry =  walletService.withdraw(request.walletNumber(), request.amount(),idempotencyKey);
         return ResponseEntity.ok(new TransactionResponse(entry.getEntryId(),entry.getIdempotencyKey()));
     }
 
     @PostMapping("/revers")
     public ResponseEntity<TransactionResponse> revers(@RequestBody @Valid ReversRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
-        LedgerEntry entry = walletService.revers(request.original_entry_id(),idempotencyKey);
+        LedgerEntry entry = walletService.revers(request.originalEntryId(),idempotencyKey);
+        return ResponseEntity.ok(new TransactionResponse(entry.getEntryId(),entry.getIdempotencyKey()));
+    }
+
+    @PostMapping("/hold")
+    public ResponseEntity<HoldResponse> hold(@RequestBody @Valid HoldRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
+        HoldResponse response = walletService.hold(request.walletNumber(), request.amount(), idempotencyKey);
+        return ResponseEntity.ok(new HoldResponse(response.entryId(),response.idempotencyKey(), response.cif()));
+    }
+
+    @PostMapping("/settle")
+    public ResponseEntity<TransactionResponse> settle(@RequestBody @Valid SettleRequest request, @RequestHeader("Idempotency-Key") String idempotencyKey){
+        LedgerEntry entry = walletService.settle(request.entryId(), idempotencyKey);
         return ResponseEntity.ok(new TransactionResponse(entry.getEntryId(),entry.getIdempotencyKey()));
     }
 }

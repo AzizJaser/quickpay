@@ -13,7 +13,5 @@ public record TransferRequest (
     @NotNull
     @Positive
     Long amount
-
-    // do not forgot the idemp key
 ) {
 }

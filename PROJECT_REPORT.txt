@@ -1,323 +1,610 @@
-================================================================================
+let's ================================================================================
 QUICKPAY — PROJECT REPORT
 A ledger-backed payment system built as a production-engineering learning project
-Report generated: 2026-07-01
+Report generated: 2026-08-27
 Author: Abdulaziz Aljaser (junior solution architect)
 ================================================================================
+
+QUICK STATUS
+  3 of 4 services built and working end to end. Traceability complete across all
+  of them. Currently mid-way through adding business meaning to the ledger.
+  Nothing has been deliberately broken yet — that is Phase 7, gated behind having
+  all four services so the sabotage pass is done once.
+
+  64 commits · ~3,400 lines of application Java · 32 migrations · 17 tests
+
 
 --------------------------------------------------------------------------------
 0. WHAT THIS PROJECT IS
 --------------------------------------------------------------------------------
-QuickPay is a hands-on learning build of a small but realistic payments platform.
-The stated rule of the project: the human writes ALL application code; the AI acts
-as a blunt senior reviewer/explainer and only scaffolds infrastructure (mock
-simulators, build config, Docker). The point is to learn production engineering by
-building it, so the learning value stays with the person typing the code.
+QuickPay is a hands-on build of a small but realistic SAR digital-wallet payment
+platform. The rule of the project: the human writes ALL application code; the AI
+acts as a blunt senior reviewer and explainer, and only scaffolds infrastructure
+(mock simulators, build config, Docker Compose). The learning value stays with the
+person typing the code.
 
-Core discipline enforced throughout ("the golden rule"): MONEY IS NEVER CREATED OR
-DESTROYED. This is guaranteed by the database itself (constraints), not by trusting
-application code to be correct. A second working rule ("predict-then-run", Rule 5):
-before every test or migration run, write down the predicted outcome first, then
-run and compare — this is how wrong mental models get caught.
+Two disciplines are enforced throughout:
 
-Tech stack: Java 21/23, Spring Boot 3.3.5, PostgreSQL 16, Flyway (migrations),
-Hibernate/JPA, Lombok, Testcontainers, Maven multi-module monorepo, Docker Compose.
+  THE GOLDEN RULE — money is never created or destroyed. Guaranteed by the
+  database through constraints, not by trusting application code to be correct.
 
---------------------------------------------------------------------------------
-1. SYSTEM ARCHITECTURE (as of this report)
---------------------------------------------------------------------------------
-Maven monorepo with four modules:
+  PREDICT-THEN-RUN — before any test, migration or experiment, write down the
+  expected outcome first, then run and compare. This is how wrong mental models
+  get caught rather than confirmed.
 
-  wallet-service       (port 8080) — the money ledger. Owns accounts + balances.
-  bill-service         (port 8081) — the bill-payment saga orchestrator.
-  scaffolding/gateway-simulator (9090) — mock card/payment gateway (AI-built mock).
-  scaffolding/biller-simulator  (9091) — mock external biller network (AI-built mock).
+Stack: Java 21, Spring Boot 3.3.5, PostgreSQL 16, Flyway, Hibernate/JPA, Lombok,
+RabbitMQ, Testcontainers, Maven multi-module monorepo, Docker Compose.
 
-Each service owns its OWN PostgreSQL database (data ownership):
-  wallet -> localhost:5432  (docker container quickpay-wallet-db)
-  bill   -> localhost:5433  (docker container quickpay-bill-db)
-
-The two simulators are mocks of EXTERNAL systems, not QuickPay services — they do
-not count against the "max 4 services" scope rule.
 
 --------------------------------------------------------------------------------
-2. THE WALLET SERVICE (COMPLETE, TESTED, IN PRODUCTION-SHAPE)
+1. ARCHITECTURE
 --------------------------------------------------------------------------------
-Purpose: a ledger-backed account system. Every movement of money is recorded so
-that conservation is provable and enforced by the database.
+Six Maven modules — three QuickPay services and three mocks of external systems:
 
-KEY DESIGN DECISIONS (each captured as an ADR — see section 6):
-  * Two-leg single-row ledger: one ledger row holds BOTH sides of a movement
-    (debited_amount negative, credited_amount positive). The DB enforces
-    conservation with CHECK(debited_amount + credited_amount = 0). A one-sided
-    money move literally cannot be committed. (ADR-0001)
-  * Money = BIGINT minor units <-> Java Long. No floating point.
-  * Append-only ledger: reversals are NEW rows, never edits/deletes.
-  * Cached wallet.balance, updated in the same transaction as the ledger entry,
-    reconciled against SUM(entries) by a scheduled job.
-  * Idempotency via a client-supplied key + UNIQUE(idempotency_key) constraint.
-  * Concurrency: pessimistic FOR UPDATE lock, always acquired in a consistent
-    order (sort the two wallet ids, lock the larger first) to prevent deadlock
-    cycles — NOT timeouts (a timeout is only a backstop).
-  * System accounts may go negative (the money-source account is negative by
-    design); customer wallets may not. (ADR-0002, later refined by ADR-0004)
+  wallet-service        :8080  the money ledger; owns accounts and balances
+  bill-service          :8081  the bill-payment saga orchestrator
+  notification-service  :8082  SMS/email delivery with retry and terminal state
+  ---------------------------------------------------------------------------
+  scaffolding/gateway-simulator   :9090  mock card/payment gateway
+  scaffolding/biller-simulator    :9091  mock external biller network
+  scaffolding/provider-simulator  :9092  mock SMS/email provider
 
-CORE OPERATIONS (all in one @Transactional each):
-  * transfer(from, to, amount, key)  — the primitive; validates amount, blocks
-    self-transfer, checks idempotency, locks both wallets in order, checks status
-    (Active) + balance, moves money both sides, writes ONE ledger row.
-  * topUp(wallet, amount, key)        = transfer(INWARD_ACCOUNT -> wallet)
-  * withdraw(wallet, amount, key)     = transfer(wallet -> OUTWARD_ACCOUNT)
-  * reverse(originalEntryId, key)     = a NEW transfer that swaps the parties of
-    the original entry (temp/suspense -> customer), guarded so it can only ever
-    happen once per entry.
-  * Wallet lifecycle: create / activate / suspend / close (status state).
-  * Reconciliation job (@Scheduled): flags any wallet where balance != SUM(legs).
+The simulators are NOT QuickPay services. They exist so failure paths are
+reachable: each can be forced into specific outcomes (declines, 5xx, timeouts) and
+the provider fails 30% of the time by default. A log-only mock would have left
+every retry and reconciliation path as unreachable code.
 
-SYSTEM ACCOUNTS (internal, not customer wallets):
-  000000000001  Inward / TopUp   — money source; is_internal, allows_negative=TRUE
-  000000000002  Outward          — withdrawal sink; is_internal, allows_negative=FALSE
-  000000000003  Suspense/Temp    — holds reserved money mid-bill; is_internal,
-                                    allows_negative=FALSE (never goes negative)
-  000000000004  Biller settlement— receives captured bill funds; is_internal,
-                                    allows_negative=FALSE
-  Conservation invariant now spans:
-    inward + customers + suspense + outward + biller = 0
+Service #4 (history/statements) is designed but NOT started. Budget is four
+services; an AI feature was raised and deliberately deferred as a candidate inside
+#4, never in the money path.
 
-HTTP API (wallet):
-  POST /v1/wallets                          create wallet
-  GET  /v1/wallets/{number}                 fetch
-  PUT  /v1/wallets/activate|suspend/{n}     lifecycle
-  DELETE /v1/wallets/close/{n}
-  POST /v1/transfer/betweenWallets          transfer (returns entry_id)
-  POST /v1/transfer/top-up                  top-up
-  POST /v1/transfer/withdraw                withdraw
-  POST /v1/transfer/revers                  reverse a prior entry
-  POST /v1/gateway/webhook                  secured HMAC webhook (see below)
-  (all transfer endpoints return a TransactionResponse carrying entry_id +
-   idempotency key, so callers like the bill service get a receipt.)
+DATA OWNERSHIP — one database per service, no shared tables:
 
-GATEWAY WEBHOOK (money IN via an external gateway simulator):
-  The gateway simulator (:9090) sends HMAC-SHA256-signed webhooks. The wallet
-  verifies the signature (lowercase hex, constant-time MessageDigest.isEqual),
-  401s a forgery, then tops up the wallet using the gateway txn id as the
-  idempotency key. Redelivery -> still 200, no double credit. Verified live.
+  wallet        localhost:5432   quickpay-wallet-db          15 migrations
+  bill          localhost:5433   quickpay-bill-db             2 migrations
+  notification  localhost:5434   quickpay-notification-db    15 migrations
 
-TESTING (wallet):
-  Testcontainers (real throwaway Postgres) integration tests — 8/8 green:
-    - transfer moves money and conserves total
-    - insufficient balance throws and nothing moves (atomicity)
-    - duplicated idempotency key replay moves money exactly once
-    - reconciliation detects drift
-    - reverse moves money back
-    - reverse of a non-existent entry -> 404
-    - reverse replay with same key -> 409 (at-most-once)
-    - over-reverse after temp empty -> blocked by the suspense balance floor
-  CI: GitHub Actions runs `mvn verify` (with Testcontainers) on push/PR.
+COMMUNICATION
+  Synchronous HTTP where a caller needs an answer now (bill → wallet).
+  Asynchronous events over RabbitMQ for fan-out (wallet → notifications), via a
+  topic exchange `quickpay.events` with dotted routing keys, so consumers bind
+  selectively without the publisher knowing they exist.
+
 
 --------------------------------------------------------------------------------
-3. THE REVERSE PATH & SUSPENSE ACCOUNT (wallet migrations V7-V9)
+2. THE MONEY MODEL (wallet-service)
 --------------------------------------------------------------------------------
-Built to support the bill-payment flow's compensation (reverse) step. Designed via
-Socratic review; the final design deliberately DIFFERED from the first sketch:
+Two tables carry the money: `wallet` (balances) and `ledger` (movements).
 
-  * V7 — split the single "is_system" flag into TWO orthogonal flags:
-        is_internal    (system-owned, not a customer wallet)
-        allows_negative(a money source; may carry a negative balance)
-    Rationale (ADR-0004): is_system secretly meant two different things that
-    happen to coincide for the inward account but DIVERGE for the suspense
-    account. The suspense account is internal but must NEVER go negative. New
-    constraint: CHECK(balance >= 0 OR allows_negative). Seeded the suspense
-    account 000000000003. The transfer balance-skip in code was switched to key
-    off allows_negative (NOT is_internal) — the critical trap: keying off
-    is_internal would let the suspense account overdraw before the DB could stop it.
+LEDGER COLUMNS
+  entry_id, debited_wallet_number, credited_wallet_number,
+  debited_amount, credited_amount, idempotency_key, created_at,
+  reverses_entry_id, settles_entry_id, transaction_type
 
-  * V8 — added reverses_entry_id (nullable) + a self-FK to ledger(entry_id).
-    A reversal row is a normal keyed ledger row whose reverses_entry_id points at
-    the entry it undoes — a clear, queryable audit link. Design chosen after
-    rejecting a nullable-idempotency-key + XOR-check alternative.
+Each row is ONE transfer carrying BOTH sides — debit and credit in a single row,
+so conservation is a per-row property the database enforces.
 
-  * V9 — UNIQUE(reverses_entry_id). Makes "an entry can be reversed at most once"
-    a database FACT (defense-in-depth), independent of the deterministic-key
-    discipline. Crucial for the SHARED suspense account, where the balance floor
-    alone can't catch a double-reverse (the pool may hold other bills' money).
+THE INVARIANTS (13 constraints on `ledger`; the load-bearing ones)
 
-Reverse safety rests on THREE independent guards:
-  (1) deterministic reverse idempotency key (UNIQUE(idempotency_key) collapses retries)
-  (2) suspense balance >= 0 floor (a reverse-after-capture fails at the DB)
-  (3) UNIQUE(reverses_entry_id) (one reversal per entry, ever)
+  ledger_check1              debited_amount + credited_amount = 0
+                             Money cannot be created or destroyed by a transfer.
 
---------------------------------------------------------------------------------
-4. THE BILL-PAYMENT SAGA (bill-service — THE HARD PART OF THE PROJECT)
---------------------------------------------------------------------------------
-Why it's hard: unlike top-up/transfer/withdraw (all fast, single-DB, ACID), bill
-payment crosses an EXTERNAL biller network that is SLOW (up to ~60s) and FLAKY
-(timeouts, 5xx). Requirement: a customer must NEVER lose money to a biller failure,
-and a bill must NEVER show "paid" if the biller didn't actually receive it.
+  ledger_check                debited_wallet <> credited_wallet
+  ledger_debitedamount_check  debited_amount < 0
+  ledger_creditedamount_check credited_amount > 0
+                             A transfer has two distinct sides with correct signs.
 
-THE SAGA (state machine: Pending -> Reserved -> Paid | Rejected):
-  1. CREATE (write-ahead intent): record the bill as Pending and COMMIT it FIRST,
-     before any money moves. This durable row is the recovery anchor — if anything
-     later crashes, the intent survives and can be reconciled.
-  2. RESERVE: move customer -> suspense (000000000003) via the wallet. Store the
-     returned ledger entry_id on the bill; flip Pending -> Reserved. If the wallet
-     declines (insufficient funds -> HTTP 400), flip Pending -> Rejected. Transient
-     errors leave it Pending.
-  3. CALL THE BILLER: send pay(billNumber, amount, reference=paymentId) and branch:
-       PAID (200)    -> CAPTURE: move suspense -> biller (000000000004); flip Paid.
-       FAILED (422)  -> REVERSE: undo the reserve (suspense -> customer); flip Rejected.
-       UNKNOWN (5xx / timeout) -> leave Reserved; do NOT guess. The EOD sweep will
-                       later inquire and resolve. "When you don't know, don't move money."
+  ledger_idempotency_key_key  UNIQUE(idempotency_key)
+                             A retried request cannot move money twice.
 
-ORDERING RULE, everywhere: MOVE MONEY FIRST, FLIP STATUS LAST. A bill is never
-marked terminal until the money has actually moved.
+  wallet_balance_check        balance >= 0 OR allows_negative
+                             Only accounts explicitly permitted may go negative
+                             (the internal top-up account, which funds the system
+                             from outside).
 
-TWO KINDS OF IDENTIFIER (a subtle, important distinction that was worked out):
-  * billReference — issued by the BILLER, printed on the bill, given to the
-    customer. Answers "which bill?". Reused across attempts. NOT a dedup key
-    (deduping on it would block a legitimate retry of a failed bill).
-  * paymentId — generated by the BILL SERVICE, one per payment record. The biller's
-    idempotency/inquire handle AND the seed for the wallet keys. Stable across a
-    payment's own system retries.
-  * Inbound: a CLIENT-supplied idempotency key (UNIQUE) guarantees one customer
-    request -> one payment record. A deliberate re-pay uses a new key (the
-    customer's responsibility); the system's own retries reuse the same ids.
-  * Wallet keys derived from paymentId, hyphen-stripped to fit varchar(36):
-    reserve "r"+id, capture "c"+id, reverse "v"+id.
+  ck_one_discharge_kind       reverses_entry_id IS NULL OR settles_entry_id IS NULL
+                             A row is a reversal OR a settlement, never both.
 
-EXACTLY-ONCE ACROSS THE FLAKY BILLER = at-least-once retry + idempotent consumer.
-The bill service retries with a STABLE reference; the biller stores one outcome per
-reference and replays it (or answers an inquiry). Neither half alone is enough.
+  uq_entry_discharged_once    UNIQUE(coalesce(reverses_entry_id, settles_entry_id))
+                             A hold is discharged exactly once, one way. Without
+                             this, a hold could be both settled AND released —
+                             paying the biller and refunding the customer from the
+                             same money.
 
-ASYNC EXECUTION (so the slow biller never blocks the customer):
-  The customer's POST returns "Reserved" IMMEDIATELY (built before the biller call).
-  payBiller() is @Async (fire-and-forget, called controller -> service through the
-  Spring proxy — self-invocation would NOT be async). The final Paid/Rejected
-  settles on a background thread; the client would poll GET to see it.
-  DURABILITY CAVEAT: @Async is in-memory. A crash between reserve and pay would
-  strand money in suspense. The REQUIRED safety net is the DB-backed EOD sweep
-  (see section 7 — the next feature to build).
+  Both discharge rules are needed together. The unique index alone is defeated by
+  a row that sets both columns (coalesce returns the first, and the second is
+  never examined) — a hole found by the learner, not the reviewer.
 
-HTTP timeouts: the biller RestClient has a read timeout so a hung biller actually
-throws (ResourceAccessException) instead of blocking forever — that thrown timeout
-is the UNKNOWN signal.
+CONCURRENCY
+  Wallets are locked in a deterministic order (lowest wallet number first) before
+  balances change, so two transfers touching the same pair cannot deadlock.
 
-BILL SCHEMA (bill-service V1): payment_id (PK), bill_reference, wallet_number,
-amount (CHECK > 0), status varchar CHECK IN (Pending,Reserved,Paid,Rejected),
-entry_id (NULLABLE — null until reserve, for write-ahead), idempotency_key
-(NOT NULL UNIQUE), created_at.
+INTERNAL ACCOUNTS — money entering or leaving the platform has a counterparty:
+  000000000001  Internal TopUp     (allows negative — funds enter here)
+  000000000002  Outward Transfer   (money leaving toward another bank)
+  000000000003  Suspense           (funds held, outcome not yet known)
+  000000000004  Bill Account       (liability: money owed to billers)
 
---------------------------------------------------------------------------------
-5. VERIFICATION — WHAT HAS BEEN PROVEN END-TO-END
---------------------------------------------------------------------------------
-Every scenario below was run live across the real services with predict-then-run;
-all predictions matched.
+TRANSACTION TYPES (added 2026-08, migrations V13–V15)
+  Before this, every ledger row was just "a transfer" — statements, analytics and
+  reconciliation could not tell a bill payment from a P2P. The type is assigned
+  server-side by the endpoint, so it is unforgeable, and the vocabulary describes
+  MONEY MOVEMENT rather than products, so the wallet never learns what a "bill" is:
 
-  WALLET (unit/integration, Testcontainers): 8/8 tests green (section 2).
+    DEPOSIT      001 → customer          money enters the platform
+    WITHDRAWAL   customer → 002          money leaves toward another bank
+    TRANSFER     customer → customer     a completed P2P
+    HOLD         customer → 003          funds earmarked, outcome unknown
+    SETTLEMENT   003 → 004               beneficiary confirmed; discharged outward
+    RELEASE      003 → customer          beneficiary declined; discharged back
+    REVERSAL     opposite of original    an undo of anything that was not a hold
 
-  BILL SAGA (manual cross-service, all three apps up):
-   * Inbound idempotency: same client key -> same payment record (no duplicate row);
-     new key -> new record; changed body on a deduped key returns the STORED record.
-   * Reserve happy: fund 5000, pay 2000 -> Reserved, customer 5000->3000,
-     suspense +2000. Money conserved.
-   * Reserve decline: pay 9000 > 3000 balance -> wallet 400 -> bill Rejected,
-     no money moved.
-   * Biller PAID (async): HTTP returns Reserved instantly; bill flips to Paid;
-     ledger shows 2 legs (r: customer->suspense, c: suspense->biller); customer
-     -2000, biller +2000. Conserved.
-   * Biller FAILED (async): bill -> Rejected; reverse leg (v: suspense->customer)
-     with reverses_entry_id linking the reserve leg; customer made whole; biller
-     untouched. Conserved.
-   * Biller UNKNOWN (sim SERVER_ERROR/503): bill STAYS Reserved; money parked in
-     suspense; only the reserve leg exists; an inquiry to the biller returns 404
-     (never settled) confirming the service correctly did not guess.
+  Rejected alternatives are recorded because they were close calls:
+    - deriving the type from account numbers at read time (leaks wallet internals
+      across service boundaries; CDC consumers would hardcode "004 = bill")
+    - storing an int code (unreadable database, every consumer needs the mapping,
+      enum ordinals silently rewrite history on reorder)
+    - naming products (BILL_PAYMENT) instead of movements (couples the ledger to
+      whatever service happens to be calling it)
+    - broadening RELEASE to mean "any undo" (would pull reversed transfers into
+      the held-money identity and silently corrupt it)
+
+  WHAT THIS BUYS: SUM(HOLD) − SUM(SETTLEMENT) − SUM(RELEASE) = money currently
+  sitting in suspense, answerable from the wallet's own ledger. That is the
+  stranded-funds question the bill service's EOD sweep exists to chase, and the
+  wallet could not previously be asked it at all.
+
+ENDPOINTS
+  POST /v1/transfer/betweenWallets   TRANSFER
+  POST /v1/transfer/top-up           DEPOSIT
+  POST /v1/transfer/withdraw         WITHDRAWAL
+  POST /v1/transfer/hold             HOLD        {walletNumber, amount}
+  POST /v1/transfer/settle           SETTLEMENT  {entryId}
+  POST /v1/transfer/revers           derived from the target entry
+
+  /settle takes ONLY the hold's entry id. The wallet supplies the beneficiary
+  account and reads the amount from the hold itself, so settling an amount that
+  was never held is not expressible rather than merely forbidden.
+
 
 --------------------------------------------------------------------------------
-6. ARCHITECTURE DECISION RECORDS (ADRs)
+3. THE BILL SAGA (bill-service)
 --------------------------------------------------------------------------------
-(Full text lives on the docs/adr-and-learning-docs branch, not on main.)
-  ADR-0001  Two-leg single-row ledger (DB-enforced conservation).            Accepted
-  ADR-0002  System accounts may go negative (uniform reconciliation).        Accepted
-                                                (amended by 0004)
-  ADR-0003  Applied Flyway migrations are immutable / forward-only.          Accepted
-  ADR-0004  Split is_system -> is_internal + allows_negative.                Proposed
-  (Also on that branch: quickpay-project-brief, learning-log, learning-playbook,
-   sequence diagrams for the bill-payment and gateway-webhook flows.)
+A bill payment spans two services and an external biller, so it cannot be one
+transaction. It is a saga with compensation:
+
+  create        bill Pending
+  reserve       wallet /hold: customer → suspense        bill Reserved
+  pay biller    @Async call to the biller network
+     PAID       wallet /settle: suspense → bill account  bill Paid
+     FAILED     wallet /revers: suspense → customer      bill Rejected
+     UNKNOWN    nothing — bill stays Reserved for the EOD sweep
+
+The suspense account exists to model UNCERTAINTY OVER TIME. Between "customer
+committed" and "biller confirmed" the money belongs to neither party. A P2P has no
+such gap and is deliberately NOT routed through suspense: that would split one row
+into two, lose the per-row conservation guarantee, and invent a stranded-funds
+failure mode that cannot currently exist.
+
+BILL STATES: Pending, Reserved, Paid, Rejected, Failed
+
+  Rejected carries an implicit promise — the customer was refunded (the FAILED
+  path reverses before setting it). Failed was added because a refused settle
+  leaves the hold intact: marking such a bill Rejected would make the status lie
+  about where the money is. Failed means automation is finished and a human must
+  look.
+
+  Every terminal state leaves the sweep's working set: the sweep queries
+  findByStatus(Reserved), so a finished bill is never even loaded.
+
+THE 409 PROBLEM (solved 2026-08-27)
+  /settle can return 409 for two opposite reasons — a duplicate idempotency key
+  (the same request replayed; safe to treat as success) or the discharge index
+  firing (the hold was discharged by something else). The dangerous case: a hold
+  already RELEASED, with the money back in the customer's wallet, read as
+  "settled" and the bill marked Paid.
+
+  Deferring the conflict to the EOD sweep does not work — the sweep re-inquires,
+  re-captures, hits the same 409 and loops forever, leaving the bill permanently
+  Reserved. The poison-row problem, in a third service.
+
+  Fix: the wallet's 409 carries what the caller needs to recover — the hold id,
+  the discharging entry id, and its type, as RFC 7807 ProblemDetail properties.
+  The bill service reads dischargeType and reconciles in the same call:
+  SETTLEMENT → Paid, RELEASE → Rejected. No extra round trip, no biller inquiry.
+
+  PRINCIPLE: an error response should carry what the caller needs to recover. A
+  bare 409 says "no" and leaves them stuck.
+
+VERIFIED: the full race, using the biller simulator's TIMEOUT mode (settles PAID
+but the caller never hears back) — hold released behind the bill service's back,
+sweep inquires and captures, wallet answers 409 RELEASE, bill becomes Rejected.
+
 
 --------------------------------------------------------------------------------
-7. WHAT REMAINS — THE EOD SWEEP (next and final feature of this phase)
+4. NOTIFICATIONS (notification-service)
 --------------------------------------------------------------------------------
-The UNKNOWN branch deliberately leaves a Reserved bill with money parked in
-suspense, unresolved. The End-Of-Day sweep is the one mechanism that closes this,
-and it does TWO jobs at once:
-  (1) UNKNOWN RESOLVER — periodically find Reserved bills, INQUIRE the biller
-      (GET /biller/v1/payments/{paymentId}: 200 PAID/FAILED, or 404 NOT_FOUND),
-      and resolve via the SAME capture/reverse paths. Pending too long
-      (> ~1 day) -> reverse + raise a payment-ops ticket.
-  (2) DURABILITY NET — re-picks-up any bill stranded Reserved by an @Async crash,
-      which is what makes @Async safe for money.
-Build steps: BillerClient.inquire() (must NOT throw on 404 — NOT_FOUND is a valid
-answer), BillRepository.findByStatus(Reserved), @EnableScheduling + a @Scheduled
-sweep component (mirroring the wallet's reconciliation job), and a resolver that
-reuses the capture/reverse logic (idempotency keys make the retry safe).
+Consumes `quickpay.events` and delivers SMS and email through the provider
+simulator, which fails 30% of the time on purpose.
 
-Other known follow-ups (non-blocking): the V9 UNIQUE(reverses_entry_id) is not yet
-exercised by an automated test (needs a shared-temp double-reverse test); the bill
-service has no automated integration tests yet (only manual verification); the
-create-only POST /bill/create endpoint is a debug convenience and could be removed.
+RELIABLE PUBLISHING — TRANSACTIONAL OUTBOX
+  The event row is written in the SAME transaction as the money movement. If the
+  money is committed, the obligation is committed. Rejected: "write the row only
+  when publishing fails" — a crash between commit and publish skips the failure
+  handler entirely and the event is lost with no trace.
+
+  A relay job publishes unsent rows, then marks sent_at. PUBLISH FIRST, MARK
+  SECOND: marking first loses the event on a failed publish. This is at-least-once
+  by design, which is why the consumer must be idempotent.
+
+  Partial index (created_at) WHERE sent_at IS NULL — holds only the unsent backlog,
+  ~8 kB regardless of table size, and eliminates the sort.
+
+IDEMPOTENT CONSUMER
+  Dedup on the AMQP message_id, stored in processed_events. At-least-once delivery
+  plus an idempotent consumer is the third appearance of this pattern in the
+  project (gateway webhook, biller, now events).
+
+TERMINAL STATE (the design's central lesson)
+  A boolean holds two values but the system has three situations: pending, sent,
+  and tried N times and gave up. With a boolean, the last two are both `false`, so
+  the partial index could never shed dead rows and `attempts` incremented forever.
+  Both bugs, one root cause: no way to say "done, but not successfully".
+
+  Fixed with per-channel state columns (PENDING / SENT / FAILED) as varchar +
+  CHECK — not a native Postgres enum, which fights Hibernate's varchar binding.
+  Per channel because SMS and email succeed and fail independently.
+
+RETRY JOB
+  Two queries, one per channel, each matching one partial index — a single query
+  with OR across both columns could use neither. Results merged by message_id so a
+  row pending on both channels is not processed twice and `attempts` is not
+  double-incremented.
+
+  Verified at volume: 500k rows with 50 pending — partial index 16 kB, query
+  0.024 ms versus 55 ms for a sequential scan. The bind-parameter path keeps the
+  index; a forced generic plan drops to 119 ms, so the protection is the size of
+  the cost gap, not a guarantee.
+
+  The index's biggest win turned out to be the IDLE poll: fixedDelay fires whether
+  or not there is work, roughly 34,560 empty polls a day. At 0.017 ms each that is
+  invisible; at 119 ms it would be a permanent CPU burn on an idle system.
+
+  Retry maths validated: 0.3 failure rate with 5 attempts predicted 0.24 permanent
+  failures across 50 rows; exactly 1 was observed.
+
+DESIGN DECISIONS
+  - Customers are seeded, so an unknown cif means "never notify" — log and drop,
+    write no row. A row would be permanent retry fodder with no terminal state.
+  - Contact details are looked up fresh at delivery time, never snapshotted, so a
+    changed phone number applies to retries too. That is why events carry cif.
+  - The listener NEVER throws: an escape means requeue, and a malformed payload
+    fails identically forever — a hot loop.
+  - last_attempt_at is audit-only; retries fire at a fixed interval. Exponential
+    backoff is the obvious upgrade if a sustained outage ever burns all five
+    attempts inside five minutes.
+
 
 --------------------------------------------------------------------------------
-8. GIT HISTORY (chronological)
+5. TRACEABILITY
 --------------------------------------------------------------------------------
-  2026-06-11  Initial commit
-  2026-06-11  AI agent rules
-  2026-06-16  Build QuickPay wallet service: ledger, transfers, top-up, reconciliation
-  2026-06-16  Add withdrawal flow with outward system account
-  2026-06-16  Add CI workflow (GitHub Actions): build + Testcontainers on push/PR
-  2026-06-16  Merge PR #1 feat/wallet-service
-  2026-06-16  Restructure into a Maven multi-module monorepo
-  2026-06-17  Add secured gateway webhook (HMAC signature + idempotency)
-  2026-06-17  Merge PR #2 feat/gateway-webhook
-  2026-06-21  Scaffold biller simulator (mock biller network)
-  2026-06-23  Add reverse path for bill flow (suspense account, V7-V9)
-  2026-06-23  Lower biller-sim timeout knob; drop no-op @Valid on webhook raw body
-  2026-06-26  Add bill-service module + write-ahead create-payment slice
-  2026-06-29  wallet: return entry_id from transfer endpoints
-  2026-06-29  bill: reserve step — hold customer funds in suspense via the wallet
-  2026-07-01  wallet: add biller settlement account (V10)
-  2026-07-01  bill: biller call with capture/reverse, run async
-  (Current branch: feat/biller-simulator. Last two commits are local, not yet pushed.)
+Landed ahead of the Phase 7 sabotage pass, because a deliberately broken flow
+across three services is unreadable without it.
+
+MDC is per-thread and per-JVM — nothing is shared. The correlation id propagates by
+being COPIED at every boundary, and each boundary needs its own mechanism:
+
+  inbound HTTP     servlet filter — accept if present, generate if absent
+  outbound HTTP    RestClient interceptor (the filter's mirror)
+  @Async           TaskDecorator — capture on the caller, restore on the worker
+  @Scheduled       generate a run id per firing (relay-, eod-, resending-, …)
+  outbox → relay   a DATABASE COLUMN — the writer is dead and its MDC wiped
+  AMQP             the built-in correlation_id message property
+
+The outbox is the boundary no in-memory mechanism can cross: the request thread
+that wrote the row is gone by the time the relay publishes, up to a minute later.
+That is why the id must be persisted rather than copied.
+
+TWO IDS, TWO JOBS. A batch job's own MDC describes THE RUN; each item carries ITS
+OWN stored id. Publishing the run id onto messages would merge a hundred unrelated
+customers into one apparent trace — worse than no id, because it looks correct.
+
+FAIL OPEN FOR DIAGNOSTICS. Both correlation columns are permanently nullable: the
+outbox write sits inside the money-move transaction, so NOT NULL would roll back a
+transfer over a missing debugging field. The same rule forced a length cap at the
+filters — an oversized inbound header would overflow varchar(70) and roll back the
+transfer, defeating the rule through the back door.
+
+A CORRELATION ID IS A KEY WITH NOTHING TO UNLOCK unless something logs. The
+plumbing was complete and invisible until three boundary INFO lines were added — a
+grep had been returning one unrelated warning, because 15 of the wallet's 16
+logger calls lived in the exception handler.
+
+VERIFIED: one transfer produces five log lines across two JVMs, four threads and a
+message broker, recoverable with a single grep.
+
 
 --------------------------------------------------------------------------------
-9. RECURRING LESSONS LEARNED (the "gotchas" this build kept teaching)
+6. TESTING
 --------------------------------------------------------------------------------
-  * Applied migrations are immutable — editing one that already ran = Flyway
-    checksum mismatch on next boot; fix forward with a new migration (ADR-0003).
-  * Flyway runs the copy in target/classes, NOT src — rebuild before re-running a
-    changed migration.
-  * snake_case entity fields break Spring Data derived queries (findByEntryId) —
-    use camelCase fields (mapped to snake columns) or @Query.
-  * @Enumerated with no argument defaults to ORDINAL (integer column). Use
-    @Enumerated(EnumType.STRING) and match enum constant CASE to the DB CHECK.
-  * Native Postgres ENUM types fight Hibernate — use varchar + CHECK instead.
-  * A boolean field named "internal" -> Lombok getter isInternal() -> JPA expects
-    column "internal"; pin it with @Column(name="is_internal") or accept the ugly
-    getter. (Renaming is_internal -> internal silently broke schema validation.)
-  * @Transactional self-invocation: this.method() bypasses the proxy — no new
-    transaction, and @Async doesn't run async. Call across a bean boundary.
-  * Optional is never null — check isPresent()/orElse, not != null.
-  * Cross-service DTOs must match the OTHER service's JSON field names exactly
-    (Jackson maps by name) — e.g. original_entry_id vs originalEntryId; billNumber
-    vs billReference. A mismatch silently sends null.
-  * Idempotency keys must fit varchar(36) — "reserve:"+UUID overflows; strip
-    hyphens and use a 1-char prefix (33 chars). (Same trap as "GW-"+UUID earlier.)
-  * Two beans of the same type (two RestClients) need name-matched injection or
-    @Qualifier, or startup is ambiguous.
-  * A read timeout must be configured or a hung HTTP call blocks forever and the
-    timeout exception never fires.
-  * predict-then-run caught wrong mental models repeatedly — it is the single most
-    useful habit in this project.
+17 integration tests against real Postgres via Testcontainers — 9 wallet, 8 bill.
+
+Wallet: conservation across transfers, insufficient balance, duplicate
+idempotency keys, reversal behaviour, concurrency ordering.
+
+Bill: write-ahead on create, replay returning the stored record, reserve accepted
+and declined, resolve on PAID and FAILED, and double-resolve firing capture
+exactly once.
+
+The double-resolve test found three real defects: no re-entry guard in resolve, a
+409 mistreated as failure, and no batch isolation in the sweep.
+
+KNOWN BOUNDARY: mocks prove REACTION, not PLUMBING. A test that stubs the wallet
+client proves the bill service reacts correctly to a response; it proves nothing
+about whether the HTTP call is shaped right. Those paths are covered by manual
+end-to-end runs instead, and every significant flow in this report was verified
+that way against running services.
+
+
+--------------------------------------------------------------------------------
+7. HARD-WON LESSONS
+--------------------------------------------------------------------------------
+DATABASE / MIGRATIONS
+  - Expand-contract: add nullable → deploy code that populates → backfill → add
+    the constraint. Run twice in this project, once as a full column REPLACEMENT
+    (which additionally needs a dual-write phase).
+  - SET NOT NULL skips its table scan iff a VALIDATED CHECK already proves the
+    property (PG 12+). Alone, it full-scans under ACCESS EXCLUSIVE.
+  - NOT VALID means "existing rows unchecked", NOT "not enforced" — new rows are
+    rejected immediately. That asymmetry makes the gap safe.
+  - Flyway wraps each migration file in ONE transaction and Postgres releases
+    locks only at commit — so bundling ADD CONSTRAINT NOT VALID with VALIDATE
+    holds ACCESS EXCLUSIVE across the whole scan and undoes the point of the split.
+  - Split migrations by LOCK STRENGTH and SCAN COST, not statement count.
+  - A migration that cannot roll back must be IDEMPOTENT (IF EXISTS / IF NOT
+    EXISTS). Idempotency is optional where rollback is possible.
+  - CREATE INDEX CONCURRENTLY deadlocks against Flyway by default: the build waits
+    for all open transactions and Flyway holds one for its history lock. Needs
+    spring.flyway.postgresql.transactional-lock: false. Diagnosed with
+    pg_blocking_pids() — a hang shows no error and no history row.
+  - A column DEFAULT only fires when the column is OMITTED from the INSERT.
+    Hibernate includes every insertable mapped column, so it sends explicit NULL
+    and the default never applies; insertable=false is the only way to let it fire.
+  - Native Postgres ENUM types fight Hibernate — use varchar + CHECK.
+  - Index predicates must be immutable literals; they cannot read config. Baking
+    a configurable retry limit into an index couples schema to application.yml,
+    and the failure is asymmetric and silent.
+  - A partial index only helps if the QUERY matches its expression. coalesce(...)
+    in the index needs coalesce(...) in the query; a derived OR query seq-scans.
+
+DESIGN
+  - A boolean cannot hold a terminal-failure state. Queue-shaped tables need three
+    states, not two.
+  - Terminal state means the row LEAVES THE WORKING SET — via a partial index or a
+    status-filtered query. That is what stops infinite retries, not a guard in the
+    worker.
+  - Observability must never block a business transaction.
+  - Never hold a database transaction across a network call you do not control.
+  - An exception signals a different OUTCOME, not a different CAUSE. An exception
+    whose handler does nothing different from the happy path is a liability.
+  - An @ExceptionHandler returning void yields 200 OK — silently converting a
+    rejected operation into a reported success.
+  - A catch-all @ExceptionHandler(Exception.class) intercepts Spring's own
+    well-classified exceptions and turns every client mistake into a 500.
+  - Client-facing error detail must be built from getBindingResult().getFieldErrors(),
+    never getMessage(), which dumps controller signatures and DTO class names.
+  - A dedup ledger row's lifetime is governed by how long redelivery is possible,
+    not by whether the work finished. Retention must be age-based.
+  - Check-then-act races: the pre-check produces a GOOD ERROR, the constraint
+    provides the GUARANTEE. Both are needed.
+
+SPRING / JPA
+  - @Transactional and @Async self-invocation bypasses the proxy — call across a
+    bean boundary. (Hit three times.)
+  - @Enumerated defaults to ORDINAL — always EnumType.STRING, and match the
+    enum constant case to the DB CHECK exactly.
+  - @Header(..., required = false) is mandatory for optional message metadata:
+    Spring's default throws BEFORE the listener body, outside its catch blocks,
+    producing the requeue hot loop those catches exist to prevent.
+  - MDC exists so the value is NOT threaded through method signatures. A parameter
+    gives it to one method; MDC gives it to every method on the thread.
+  - Null-guard polarity: x != null && x.f() when asking "is it usable?",
+    x == null || x.f() when asking "is it unusable?". The null check must be the
+    operand that short-circuits the other away.
+  - Spring declares broker topology LAZILY on first connection, not at startup.
+
+
+--------------------------------------------------------------------------------
+8. WHAT IS NOT BUILT
+--------------------------------------------------------------------------------
+IN PROGRESS
+  - Backfill of ~57 untyped ledger rows, then contracting transaction_type to
+    NOT NULL. NOTE: the backfill must also type DISCHARGE rows by account
+    movement, not merely fill nulls on holds — five holds released during cleanup
+    were typed REVERSAL because their targets predated V13, and once those holds
+    are typed HOLD the held-money identity gains an amount that is never
+    subtracted.
+
+NEXT
+  - bill → notification: the bill service publishes nothing, so notifications only
+    ever sees wallet events. Needs its own outbox (with a correlation column from
+    day one), a relay, a new queue binding, and message text for the new types.
+  - The double-notification decision: a bill payment already emits
+    wallet.money.sent from the reserve, so a customer would be told twice. The fix
+    is wallet-side — do not publish a customer notification for a HOLD — which is
+    now a one-line rule because the wallet knows the type.
+  - History service #4: a read model joining wallet and bill, where the human-
+    readable statement line is assembled. CDC/Debezium is the learning angle. Note
+    Debezium reads the WAL and sees only columns, which is another argument for
+    the correlation id living in the row.
+
+THEN
+  - Phase 7: deliberate sabotage. Gated behind all four services so it is done
+    once rather than repeated.
+  - Phase 8: load testing with k6, which requires a written breaking-TPS and
+    bottleneck prediction before the first run.
+
+DELIBERATELY DEFERRED
+  - Authentication — additive, low learning value, adds friction to every test.
+  - An AI feature — not in the brief; read-side, so it belongs inside #4 and never
+    in the money path.
+
+KNOWN GAPS, ACCEPTED
+  - HOLD currently means "bill" only because the bill service is the sole caller.
+    Softened by the correlation id: which holds were bills stays answerable by
+    joining to the service that owns that fact.
+  - Nobody records the DESTINATION BANK for a withdrawal — one generic outward
+    account for all outbound money. The fix is per-bank internal accounts, not a
+    new column.
+  - deliver() logs nothing, so a notification trace stops at "message received".
+  - The MDC key is a string literal in roughly six places; a typo fails SILENTLY.
+
+
+--------------------------------------------------------------------------------
+9. DESIGN RECORD — WHO DECIDED WHAT, AND WHERE THE THINKING CHANGED
+--------------------------------------------------------------------------------
+This is a learning project, so the record of how decisions moved matters as much
+as the decisions. Kept factual on purpose, in both directions.
+
+DECISIONS MADE BY THE LEARNER (with the reasoning that drove them)
+
+  Ledger transaction types — RAISED UNPROMPTED.
+    "In the ledger I will see only that it's a transaction; I don't know if it's a
+    bill payment, between customer accounts, or to a local bank — and that impacts
+    the project in the long run for analytics and AI."
+    That observation started the largest design thread in this report. It was also
+    correctly timed: it is a PREREQUISITE for the history service, not a polish
+    item, because a statement line reading "transfer −250 SAR" is useless.
+
+  Money-movement kinds over product names.
+    Given the fork — should the vocabulary name PRODUCTS (BILL_PAYMENT) or MONEY
+    MOVEMENTS (HOLD, SETTLEMENT) — chose movements, which is what keeps the wallet
+    a generic ledger that never learns what a bill is.
+
+  Dedicated endpoints over a discriminator field — AND CHANGED THE REVIEWER'S
+  RECOMMENDATION.
+    The reviewer argued for one generic endpoint with a `type` field on the
+    request. The learner argued that dedicated endpoints give room for per-type
+    business logic (limits, fees, which account pairs are legal, different
+    authorization) and that this matches how top-up and withdraw already work.
+    That argument was stronger; the recommendation was withdrawn. Endpoints also
+    make the type unforgeable, which the field version could not.
+
+  last_attempt_at stays audit-only — no exponential backoff.
+    A deliberate scope decision, recorded as a choice rather than an omission so a
+    later session does not "fix" it.
+
+  Failed as a distinct bill status, rather than reusing Rejected.
+    Accepted the argument that Rejected carries an implicit promise (the customer
+    was refunded) which a refused settle does not keep.
+
+
+CHALLENGES THAT CHANGED THE DESIGN — the learner was right
+
+  "What if the one row has the two references, hold and settle, but pointing to
+  different entries?"
+    The reviewer had presented uq_entry_discharged_once as making double-discharge
+    impossible. It does not: coalesce() returns the FIRST non-null and never
+    examines the second, so a row setting both columns slips past. Demonstrated
+    live — two rows discharged the same hold with the index in place. This is why
+    ck_one_discharge_kind exists. The invariant held only under an assumption that
+    had never been stated or enforced.
+
+  "Can't it be traced by entry_id and reverses_entry_id?"
+    The reviewer had proposed adding correlation_id to the ledger to make
+    settlements traceable. The question exposed that RELEASE rows already linked
+    back via reverses_entry_id while SETTLEMENT rows linked to nothing — and led
+    to a better fix: settles_entry_id, a structural relationship carrying a
+    uniqueness invariant, rather than a debugging breadcrumb. It also revealed the
+    root cause: WalletClient.capture was discarding an entry id the bill service
+    was already holding.
+
+  "The rejected bill shouldn't be swept, right?"
+    Correct — and the reason generalises: the sweep queries findByStatus(Reserved),
+    so a terminal bill is never loaded. The same shape as the notification
+    service's partial index. Terminal state means the row leaves the working set.
+
+  "Can't we do the steps of the job in the sync call?"
+    Aimed at a weak suggestion — the reviewer had proposed leaving a 409 conflict
+    for the EOD sweep. That would have looped forever: the sweep re-inquires,
+    re-captures, hits the same 409. The recovery had to happen in the call, which
+    is what produced the structured-409 design.
+
+  "You told me to put it in the failure section."
+    Correct; the reviewer's earlier instruction had been ambiguous about placement
+    versus condition.
+
+
+MISUNDERSTANDINGS WORKED THROUGH — where the mental model actually changed
+
+  Archiving processed_events. The instinct was to move finished rows to an archive
+  table to reduce query cost. Two things had to land: a correct partial index
+  already means the query never touches those rows (so archiving buys nothing for
+  cost), and archiving DELIVERED rows re-opens duplicate sends, because the row is
+  the dedup ledger. Resolved into: retention is age-based, never status-based.
+
+  Int codes versus string enums. Proposed storing the transaction type as an int
+  "for freedom to rename". This conflated the IDENTIFIER (stored, ~never changes)
+  with the DISPLAY LABEL (presented, changes often and per language). The label is
+  a presentation mapping regardless; the int only costs legibility.
+
+  MDC as a method parameter. The correlation id was initially threaded into
+  deliver() as an argument and never read. MDC exists precisely so the value is
+  NOT threaded through signatures — a parameter gives it to one method, MDC gives
+  it to every method on the thread.
+
+  Returning 200 for an already-settled hold. Correct for one case, dangerous for
+  the other: a hold already RELEASED has the money back with the customer, so
+  reporting "settled" would mark the bill Paid. The resolution came from noticing
+  the capture idempotency key is deterministic, so genuine retries never reach the
+  discharge index at all.
+
+  A recurring habit, named and worked on: wrapping a conditional around an entire
+  flow when only one value varies. It produced bugs four separate times (the
+  correlation filter twice, the RestClient interceptor, the TaskDecorator) — each
+  time the fix was to compute the varying value in one branch and leave everything
+  after it unconditional.
+
+
+CORRECTIONS THE OTHER WAY — reviewer errors, recorded for honesty
+
+  Stated that reverses_entry_id had no self-FK and that adding one to
+  settles_entry_id would leave the columns inconsistent. Wrong — fk_reversed_entry_id
+  already existed; the earlier schema output had been truncated before it.
+
+  Suggested deferring a settle 409 to the EOD sweep. That would have looped
+  forever (see above).
+
+  Labelled a forced Bitmap Index Scan as "eliminating the sort" during the volume
+  test. A bitmap scan does not preserve index order, so the Sort node remained;
+  only a plain Index Scan gets the ordering for free.
+
+  Ran a settle test against an entry id that did not exist, concluded a handler was
+  broken, and had to re-run correctly. The flawed test did surface a real bug — the
+  catch-all exception handler returning 500 for client mistakes — but by accident.
+
+
+--------------------------------------------------------------------------------
+10. HOW TO RUN
+--------------------------------------------------------------------------------
+  docker compose up -d          Postgres × 3, RabbitMQ (5672, UI 15672)
+  then start, in any order:
+     wallet-service        :8080
+     bill-service          :8081
+     notification-service  :8082
+     gateway-simulator     :9090
+     biller-simulator      :9091
+     provider-simulator    :9092
+
+  Logs are written to logs/<service>.log at the repo root (gitignored, appended
+  across restarts, rolled at 10 MB). Every line carries the correlation id, so a
+  single grep across all three files reconstructs one flow.
+
+  The simulators expose /simulate/mode and /simulate/state to force outcomes —
+  this is how failure paths are exercised deliberately rather than hoped for.
 
 ================================================================================
-END OF REPORT
+PROJECT_PLAN.md at the repo root is the living plan and session handover; it holds
+the current NEXT ACTION, the open decisions and the ordered backlog. This report
+is a snapshot; the plan is the source of truth.
 ================================================================================
