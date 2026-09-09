@@ -5,7 +5,6 @@ import com.quickpay.bill.client.WalletClient;
 import com.quickpay.bill.domain.Bill;
 import com.quickpay.bill.dto.response.BillerResult;
 import com.quickpay.bill.dto.response.HoldResponse;
-import com.quickpay.bill.dto.response.TransferResponse;
 import com.quickpay.bill.enums.BillStatus;
 import com.quickpay.bill.enums.BillerStatus;
 import com.quickpay.bill.exception.ReserveDeclinedException;
