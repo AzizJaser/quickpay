@@ -131,7 +131,6 @@ public class WalletService {
                 .orElseThrow(()-> new EntryNotFoundException(entryId));
 
         if(entry.getTransactionType() == TransactionType.HOLD){
-
             Optional<LedgerEntry> discharged = ledgerEntryRepository.findEntryByHoldId(entryId);
             if(discharged.isPresent()){
                 LedgerEntry discharger = discharged.get();
