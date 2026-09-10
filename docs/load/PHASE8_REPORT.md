@@ -112,6 +112,17 @@ roughly with the budget, the bottleneck is established by experiment rather than
 from two containers pegging their limits together. If it does not move, the real constraint
 is somewhere neither of us has looked — and that would be the finding.
 
+### E4 prediction — 4 CPU **and** pool 50 ⚠️ written before the run
+
+Learner, verbatim: *"2500 - medium, the pool was the wall"*
+
+The experiment E1 could not run. At 2 CPUs the pool was not binding (6 of 10 active) and
+raising it to 50 made throughput *worse*, because 41 backends fought over 2 cores. At 4 CPUs
+neither tier is CPU-saturated (61% and 73% of budget) and **9 of 10 connections are busy** —
+so the same change is now testing a completely different hypothesis.
+
+From 1716 req/s sustained. A prediction of 2500 is +46%.
+
 ---
 
 ## 3 · What actually happened
