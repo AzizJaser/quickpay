@@ -89,6 +89,15 @@ A direct test of Q2. If the pool were the constraint, 5× the connections would 
 ceiling substantially. The supporting observation — that wallet-service and wallet-db pinned
 their 200% CPU limits **together** — is the reason to expect nothing.
 
+### E2 prediction — removing the `existsByIdempotencyKey` SELECT ⚠️ written before the run
+
+Learner, verbatim: *"it will move a little - 5% - it's very light weghited check"* — **medium**.
+
+Rationale for the experiment: S12 measured this check catching **0 of 10** duplicates in a
+race while `ledger_idempotency_key_key` caught 9 of 9. It is a latency optimisation on the
+sequential path, not a correctness guarantee — and on a path where both tiers are CPU-pinned,
+it is one statement per request that Postgres will perform again anyway as a constraint check.
+
 ---
 
 ## 3 · What actually happened
