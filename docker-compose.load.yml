@@ -1,0 +1,118 @@
+# Phase 8 — load-test overlay. Use WITH the base file, which it extends:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.load.yml up -d --build
+#
+# Kept separate so the normal dev workflow (docker compose up -d, services from the IDE)
+# is untouched.
+#
+# WHY CPU LIMITS. A breaking TPS measured on "whatever cores happened to be free" is not
+# reproducible and cannot be compared before and after a fix — and the Phase 8 definition
+# of done requires naming a fix that MOVED the number. Pinning the budget makes the
+# measurement mean something: 8 host cores, k6 running natively alongside, so the system
+# under test gets a stated slice and the load generator gets the rest.
+#
+#   wallet-service  2.0 CPU   1g     <- the system under test
+#   postgres        2.0 CPU   1g     <- its database
+#   rabbitmq        1.0 CPU  512m    <- the outbox relay's destination
+#   (leaves ~3 cores for k6 and the host)
+
+services:
+  # ---- the system under test -------------------------------------------------
+  wallet-service:
+    build:
+      context: .
+      args:
+        MODULE: wallet-service
+    image: quickpay/wallet-service:load
+    container_name: quickpay-wallet-service
+    environment:
+      # Only the datasource URL needs overriding — every other host reference in
+      # application.yml is already env-parameterised. Spring's relaxed binding maps
+      # SPRING_DATASOURCE_URL onto spring.datasource.url, so no application code changes.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/wallet
+      RABBITMQ_HOST: rabbitmq
+      # Phase 8 knob. Spring's default is 10 and application.yml does not set it.
+      #   HIKARI_POOL=50 docker compose -f ... up -d wallet-service
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_POOL:-10}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          # Phase 8 knob:  CPU_LIMIT=4.0 docker compose -f ... up -d
+          cpus: "${CPU_LIMIT:-2.0}"
+          memory: 1g
+
+  # ---- resource budget for the dependencies ----------------------------------
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: "${CPU_LIMIT:-2.0}"
+          memory: 1g
+
+  rabbitmq:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+
+  # ---- NOT started for the P2P run -------------------------------------------
+  # P2P touches wallet-service, its Postgres and RabbitMQ. Nothing else is in the
+  # request path, so the bill and notification services stay down: fewer containers
+  # competing for the same eight cores means less ambient noise in the measurement.
+  #
+  # Consequence to expect rather than discover: with no consumer running, the wallet's
+  # money.* events accumulate in notification.money-events. That is harmless for this
+  # test, but the queue depth will climb and should not be read as a fault.
+  #
+  # Start them explicitly if a scenario needs them:
+  #   docker compose -f docker-compose.yml -f docker-compose.load.yml --profile full up -d
+  bill-service:
+    profiles: ["full"]
+    build:
+      context: .
+      args:
+        MODULE: bill-service
+    image: quickpay/bill-service:load
+    container_name: quickpay-bill-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://bill-db:5432/bill
+      RABBITMQ_HOST: rabbitmq
+      WALLET_BASE_URL: http://wallet-service:8080
+      BILLER_BASE_URL: http://host.docker.internal:9091
+    ports:
+      - "8081:8081"
+    depends_on:
+      bill-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notification-service:
+    profiles: ["full"]
+    build:
+      context: .
+      args:
+        MODULE: notification-service
+    image: quickpay/notification-service:load
+    container_name: quickpay-notification-service
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://notification-db:5432/notification
+      RABBITMQ_HOST: rabbitmq
+      NOTIFICATION_PROVIDER_URL: http://host.docker.internal:9093
+      WALLET_BASE_URL: http://wallet-service:8080
+      BILLER_BASE_URL: http://host.docker.internal:9091
+    ports:
+      - "8082:8082"
+    depends_on:
+      notification-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy

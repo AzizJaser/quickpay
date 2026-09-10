@@ -1,0 +1,11 @@
+# Keep the build context small and the image reproducible.
+# Without this, COPY . . ships every target/ dir and the whole log archive into the
+# build stage — slow, and it lets stale local jars leak into an image that is supposed
+# to be built from source.
+**/target/
+logs/
+.git/
+.idea/
+*.iml
+docs/
+*.log
