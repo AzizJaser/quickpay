@@ -29,9 +29,31 @@ regression with a plausible story attached.
 does not need tuning. The +19.7% is diagnostic. Same earned-fixes rule that kept the circuit
 breaker out of Phase 7.
 
-**▶ NEXT: the two open business requirements are DECISIONS, not builds.**
-**#1 auth** (deferred as purely additive) and **#6 history** (parked to the Kafka project by
-v2.2). Both need closing out in the sponsor decisions log — or a deliberate choice to build.
+**▶ NEXT: AUTH (requirement #1), with a CUSTOMER SERVICE as #4.** Two decisions taken
+10 Sep — see decisions log entries **6** and **7**:
+
+- **History is dropped from this project; #4 becomes a customer service.** There is no
+  customer master anywhere: `wallet` holds a bare `cif`, and `notification.customers` — two
+  hand-seeded rows — has been silently acting as one. **S10 arm A measured what that costs.**
+  It also answers auth design question Q1, *"where do credentials live?"*
+- **Kafka + an Archive DB / DWH are parked** to the Kafka project, alongside history. The
+  instinct (reporting off the money core) is right and Phase 8 confirmed the database is the
+  floor — but it breaks the RabbitMQ-only constraint, duplicates that project, and the thing
+  actually needed today (S10's reconciliation) is **two SQL queries**, not a warehouse.
+
+⚠️ **Auth is NOT "a filter in front of the controllers"** — the plan's original reason for
+deferring it. That is true of *authentication*; it is false of *authorization*. Verified
+10 Sep: no `Principal`, no `SecurityContext`, no spring-security anywhere, and
+`LedgerEntryController` takes `debitedWalletNumber` **from the request body** — so any caller
+can move money out of any wallet by naming it. The missing rule is *"does this caller own the
+wallet they are debiting?"*, which belongs **on the money path** next to `lockOrThrow`, in the
+same transaction. Deferring it has been accruing cost, not avoiding it.
+
+**Design questions are open and unanswered** — identity issuance and storage, where the
+ownership check sits relative to the row lock, the two caller types (customer vs service),
+who may debit the four internal wallets, and how identity crosses `@Async`/`@Scheduled`/AMQP
+boundaries when `SecurityContextHolder` is thread-local. **That last one is the MDC problem
+from August, again.**
 
 ---
 
@@ -1194,9 +1216,9 @@ Money was never at risk at any point — the wallet's UNIQUE constraint held thr
 QuickPay is **done** when all three are true:
 1. All **seven business requirements** are ✅ — or explicitly closed out in the sponsor
    decisions log (auth's "close it explicitly" clause now has somewhere to point).
-   **STATUS: 5 of 7 done.** Open: **#1 auth** (deferred by decision) and **#6 history**
-   (parked to the Kafka project by v2.2). Both need closing out in the decisions log rather
-   than building, if that is the call.
+   **STATUS: 5 of 7 done.** **#6 history — CLOSED OUT 10 Sep**, decisions log entry 6:
+   dropped from this project, its #4 slot reassigned to a **customer service**. **#1 auth —
+   now in progress**, and the customer service is what gives it an owner.
 2. The **sabotage log** holds ~12 scenarios, each with a written prediction and every
    surprise explained. ✅ **MET 9 Sep — 14 runs, ~56% predicted, every surprise explained.**
 3. The **load report** names the breaking TPS on P2P and at least one fix that moved it.
@@ -1428,6 +1450,69 @@ be torn up to reach the target. The baseline conforms to the target architecture
    and it teaches a different subject than this project's thesis. If LLM architecture is
    the actual goal, a small dedicated project serves it better than grafting an endpoint
    onto a payments lab.*
+
+6. **Service #4 — CUSTOMER, not history. → RESOLVED 2026-09-10.**
+   **Decision: build a customer service as #4 and drop history from this project.**
+
+   *Raised by the learner while answering the auth design questions:* "the issue that there
+   is no customer service."
+
+   **Why it is the right #4.** There is no customer master anywhere. `wallet` holds a `cif`
+   with nothing behind it; `notification.customers` holds two hand-seeded rows and is
+   silently acting as the master. **S10 arm A measured the cost of that** — a bill paid, the
+   event routed and delivered, the notification dropped 26 ms later because the cif did not
+   resolve, and the only trace a `WARN` in a log deleted after 7 days. Money moved, customer
+   never told, nothing anywhere recorded that a notification was owed.
+
+   **It also unblocks auth.** Design question Q1 was *"where do customer credentials live?"* —
+   there is no user table in any database. With a customer service that stops being a
+   workaround and becomes an owner.
+
+   **What it costs:** history leaves this project. That is a fair trade — history was already
+   parked to the Kafka project by v2.2, and it needs the event stream that project exists to
+   build. The 4-service cap is respected: wallet, bill, notification, customer.
+
+   **The work it creates is the point** — genuine distributed-systems problems with no
+   shortcut:
+   - **Who owns contact details?** If customer-service owns them, does notification call it
+     synchronously *on the message path* — coupling a consumer to a service, the exact trap
+     rejected during S10 — or replicate via events and accept eventual consistency?
+   - **`cif` becomes a real foreign reference** instead of a bare string.
+   - **What happens when a customer changes their phone number while a notification is in
+     flight?**
+
+7. **Archive DB / small DWH fed by Kafka — PARKED to the Kafka project. → RESOLVED 2026-09-10.**
+   **Decision: do not build it here.**
+
+   *Proposed 2026-09-10:* five databases, with an Archive DB acting as a small warehouse fed
+   from every service over Kafka, holding logic in stored procedures with no application in
+   front of it.
+
+   **The instinct is right and is already recorded in this plan** — *"heavy statement queries
+   off the money core, which matters with P2P targeting 500 TPS"* — and **Phase 8 confirmed
+   the database is the floor**, so keeping reporting off it is sound.
+
+   **Four reasons it does not belong in this project:**
+   1. **It breaks a hard constraint.** *"RabbitMQ for async messaging (Kafka is a different
+      project)"* — still on the page, and the reason history was parked.
+   2. **It duplicates the Kafka project.** An event-fed read store is what that project is
+      for.
+   3. **It is a different discipline.** This project's thesis is that correctness lives in
+      database constraints, proven by attacking a money core. A warehouse with logic in
+      stored procedures is data engineering. Both are worth learning; interleaving them means
+      doing neither properly.
+   4. **"Procedures without an app" gives up the whole toolchain** — no `mvn verify`, no
+      Testcontainers, no CI, no correlation ids, no predict-then-run. PL/pgSQL is the hardest
+      place in this stack to see a bug, and 14 sabotage records say that what you cannot see
+      is what hurts you.
+
+   ⚠️ **And the thing actually needed today does not require any of it.** S10 **earned**
+   end-to-end reconciliation and it is still unbuilt — it is **two SQL queries plus a start
+   boundary**. Building Kafka, a fifth database and a warehouse to run two queries is the
+   S02b → S03 lesson repeating: *before adding a mechanism to MANAGE a cost, ask whether the
+   cost can be REMOVED.*
+
+   **Parked alongside history, for the same reason and in the same place.**
 
 ---
 
