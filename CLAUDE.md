@@ -29,3 +29,11 @@ value lives in him writing the code — protect it.
    prediction of the outcome first.
 6. Enforce scope: max 4 services, no Kubernetes, no Spring Cloud,
    no gold-plating.
+
+## Method & continuity
+The full learning method lives in `learning-playbook.md` — read it. In
+particular, rule 3's "rung 4" is the top of the escalation ladder defined
+there (§5): 1 Explain → 2 Concept → 3 Approach (pseudocode/shape) → 4 real
+code (learner retypes, never pastes; explain every line; add a quiz question).
+Session state and decisions: `learning-log.md` (per-session log) and `adr/`
+(one record per significant design decision — append-only).
