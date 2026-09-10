@@ -11,6 +11,30 @@
 
 ## ▶ NEXT ACTION (update this line every session)
 
+### ✅ PHASE 8 COMPLETE — 10 Sep. 📄 **`docs/load/PHASE8_REPORT.md`**
+
+**P2P sustains ~1560 req/s against a 500 TPS requirement — 3.1× over.** Zero errors, zero
+drift and zero duplicate idempotency keys across ~929,000 transfers. **The bottleneck moved
+three times**: at 2 CPU both tiers pinned; at 4 CPU neither did and the pool became the wall
+at 9 of 10; at 4 CPU with pool 50 the database pinned at 98% while the app sat at 58%.
+**The database is the floor.**
+
+⚠️ **The most useful result is a negative one.** Raising the pool 10 → 50 at the shipped
+configuration made throughput **11% worse** and drove lock waits from 1 to 26 — the same
+change that later bought +8.8% once CPU was relieved. *Right fix, wrong constraint.* Had the
+diagnosis stopped at "pool exhausted, raise the pool", the result would have been a
+regression with a plausible story attached.
+
+**Nothing in `application.yml` was changed, deliberately** — a system 3.1× over its target
+does not need tuning. The +19.7% is diagnostic. Same earned-fixes rule that kept the circuit
+breaker out of Phase 7.
+
+**▶ NEXT: the two open business requirements are DECISIONS, not builds.**
+**#1 auth** (deferred as purely additive) and **#6 history** (parked to the Kafka project by
+v2.2). Both need closing out in the sponsor decisions log — or a deliberate choice to build.
+
+---
+
 ### ✅ PHASE 7 COMPLETE — 14 runs (9 Sep). 📄 **Final report: `docs/sabotage/PHASE7_REPORT.md`**
 
 **Criterion:** *"12 scenarios run, most predicted, every surprise explained."* — met. Prediction accuracy **34.5 / 62 ≈ 56%**; four fixes built (bulk inquiry, `scheduling.pool.size`, `mandatory` detection, the two-sided settlement window); the **circuit breaker deliberately NOT built** across five scenarios.
@@ -1170,9 +1194,16 @@ Money was never at risk at any point — the wallet's UNIQUE constraint held thr
 QuickPay is **done** when all three are true:
 1. All **seven business requirements** are ✅ — or explicitly closed out in the sponsor
    decisions log (auth's "close it explicitly" clause now has somewhere to point).
+   **STATUS: 5 of 7 done.** Open: **#1 auth** (deferred by decision) and **#6 history**
+   (parked to the Kafka project by v2.2). Both need closing out in the decisions log rather
+   than building, if that is the call.
 2. The **sabotage log** holds ~12 scenarios, each with a written prediction and every
-   surprise explained.
+   surprise explained. ✅ **MET 9 Sep — 14 runs, ~56% predicted, every surprise explained.**
 3. The **load report** names the breaking TPS on P2P and at least one fix that moved it.
+   ✅ **MET 10 Sep — 1560 TPS, bottleneck named (database CPU), +19.7% from two config
+   changes, and one change that moved it 11% the WRONG way.**
+
+⚠️ **Two of the three gates are closed. The remaining work is a decision, not a build.**
 
 *(Shape lifted from the playbook's own Q1–Q2 milestones. Learning projects don't ship —
 without this line they dissipate.)*
@@ -1210,11 +1241,11 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 | 2 | Top-up via async gateway; callbacks may duplicate or never arrive | ✅ done (HMAC webhook + idempotency) |
 | 3 | P2P transfer, instant; app auto-retries after 5s | ✅ done (idempotency key makes retry safe) |
 | 4 | Bill payment via slow (≤60s) flaky biller; never lose customer money, never show "paid" falsely | ✅ **done 2026-07-01** |
-| 5 | Notifications on every completed transaction; channel fails often, must never block a payment | ⛔ **not started** |
+| 5 | Notifications on every completed transaction; channel fails often, must never block a payment | ✅ **done 3 Sep** — service #3, transactional outbox + relay, retry job, never in the money path |
 | 6 | History + monthly statement per customer | ⛔ not started |
 | 7 | Golden rule — every movement explainable, finance will audit | ✅ structurally enforced |
 
-**Non-functional:** P2P targets 500 TPS at peak; every payment op safe to retry; full audit trail.
+**Non-functional:** P2P targets 500 TPS at peak — ✅ **measured 1560 TPS sustained (3.1× over)** on a 2-CPU budget, Phase 8; every payment op safe to retry ✅ (S12: 20 concurrent duplicate attacks, zero double charges); full audit trail ✅.
 **Stretch:** nightly reconciliation of gateway records vs wallet records.
 
 ### Hard constraints
@@ -1315,8 +1346,8 @@ UNKNOWN(503)→parked, UNKNOWN(timeout)→**recovered by the sweep**.
 | 4 | Contracts (OpenAPI + message schemas) | 🟡 endpoints exist; **no OpenAPI, no async schemas** |
 | 5 | Walking skeleton in Compose | ✅ done, CI runs `mvn verify` |
 | 6 | Build flows | 🟡 top-up ✅ P2P ✅ withdrawal ✅ webhook ✅ bill-pay ✅ — **notifications ⛔** |
-| 7 | Sabotage (~12 scenarios, predict vs outcome log) | ⛔ not started (ad-hoc only) |
-| 8 | Load test (k6, find breaking TPS on P2P) | ⛔ not started |
+| 7 | Sabotage (~12 scenarios, predict vs outcome log) | ✅ **DONE 9 Sep — 14 runs**, `docs/sabotage/PHASE7_REPORT.md` |
+| 8 | Load test (k6, find breaking TPS on P2P) | ✅ **DONE 10 Sep — 1560 TPS**, `docs/load/PHASE8_REPORT.md` |
 
 **Key framing:** almost every gap is *additive*, not *corrective* — nothing built has to
 be torn up to reach the target. The baseline conforms to the target architecture.
