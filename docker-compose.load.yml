@@ -44,7 +44,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          # Phase 8 knob:  CPU_LIMIT=4.0 docker compose -f ... up -d
+          cpus: "${CPU_LIMIT:-2.0}"
           memory: 1g
 
   # ---- resource budget for the dependencies ----------------------------------
@@ -52,7 +53,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "2.0"
+          cpus: "${CPU_LIMIT:-2.0}"
           memory: 1g
 
   rabbitmq:

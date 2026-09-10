@@ -98,6 +98,20 @@ race while `ledger_idempotency_key_key` caught 9 of 9. It is a latency optimisat
 sequential path, not a correctness guarantee — and on a path where both tiers are CPU-pinned,
 it is one statement per request that Postgres will perform again anyway as a constraint check.
 
+### E3 prediction — doubling the CPU budget (2 → 4 per tier) ⚠️ written before the run
+
+Learner, verbatim: *"2000 - medium, k6 will compete for the cores"*
+
+Sub-linear on purpose. Linear scaling from ~1600 would be ~3200; the prediction is ~2000
+because 4 + 4 + 1 = **9 CPU allocated on an 8-core host**, with k6 running natively alongside
+and needing cores of its own to generate 5000 req/s. The mechanism is named, which is what
+makes it falsifiable.
+
+This is the experiment that CONFIRMS or BREAKS the CPU diagnosis. If the ceiling moves
+roughly with the budget, the bottleneck is established by experiment rather than inferred
+from two containers pegging their limits together. If it does not move, the real constraint
+is somewhere neither of us has looked — and that would be the finding.
+
 ---
 
 ## 3 · What actually happened
