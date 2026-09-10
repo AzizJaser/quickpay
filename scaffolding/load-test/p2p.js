@@ -40,6 +40,9 @@ const otherErrors = new Counter('errors_other');
 const okLatency = new Trend('latency_successful_transfers', true);
 
 export const options = {
+  // k6's default Trend stats stop at p(95); p(99) has to be asked for explicitly or it
+  // reports as 0. Found the hard way on the first P2P run.
+  summaryTrendStats: ['med', 'p(95)', 'p(99)', 'max'],
   discardResponseBodies: false,
   scenarios: {
     p2p: {

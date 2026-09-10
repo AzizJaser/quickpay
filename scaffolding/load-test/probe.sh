@@ -25,10 +25,10 @@ while [ "$(date +%s)" -lt "$END" ]; do
       (select count(*) from pg_stat_activity where datname='wallet' and state='active'),
       (select count(*) from pg_stat_activity where datname='wallet' and state like 'idle%'),
       (select count(*) from pg_stat_activity where datname='wallet' and wait_event_type='Lock'),
-      coalesce((select string_agg(we, ', ') from (
-          select coalesce(wait_event_type,'running')||':'||coalesce(wait_event,'-')||' x'||count(*) as we
+      coalesce((select string_agg(label||' x'||n, ', ') from (
+          select coalesce(wait_event_type,'running')||':'||coalesce(wait_event,'-') as label, count(*) as n
           from pg_stat_activity where datname='wallet' and state='active'
-          group by 1 order by count(*) desc limit 3) t), '-')
+          group by 1 order by 2 desc limit 3) t), '-')
   " 2>/dev/null | awk -F'|' -v t="$(date +%T)" '{printf "%-10s %8s %8s %10s  %s\n", t, $1, $2, $3, $4}'
   sleep "$INTERVAL"
 done
