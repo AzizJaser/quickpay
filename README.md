@@ -6,7 +6,9 @@ for six days to find out what it actually guarantees.
 Three Spring Boot services, one broker, three databases, and a double-entry ledger whose
 central rule is that **money is never created or destroyed**. The interesting part is not the
 build; it is [Phase 7](docs/sabotage/PHASE7_REPORT.md), where that claim was attacked 14 times
-with a written prediction committed before every run.
+with a written prediction committed before every run — and
+[Phase 8](docs/load/PHASE8_REPORT.md), where it was run at ~1600 transfers per second and
+still did not move.
 
 ---
 
@@ -197,6 +199,33 @@ removed.*
 
 ---
 
+## Phase 8 — load test
+
+**[Read the full report →](docs/load/PHASE8_REPORT.md)**
+
+P2P sustains **~1560 req/s** against a 500 TPS requirement — **3.1× over** — with **zero
+errors, zero drift and zero duplicate idempotency keys across ~929,000 transfers**.
+
+**The bottleneck moved three times**, each time one was relieved:
+
+```
+2 CPU           both tiers pinned at ~107% of budget       1560/s
+4 CPU           neither pinned; the POOL at 9 of 10        1716/s
+4 CPU pool 50   the DATABASE at 98%, the app at 58%        1867/s
+```
+
+⚠️ **The most useful result is negative.** Raising the connection pool 10 → 50 at the shipped
+configuration made throughput **11% worse** and drove lock waits from 1 to 26 — the *identical*
+change bought +8.8% later, once CPU was relieved. **Right fix, wrong constraint.** A diagnosis
+that stopped at "pool exhausted, raise the pool" would have shipped a regression with a
+plausible story attached.
+
+**`application.yml` is unchanged, deliberately** — a system 3.1× over its target does not need
+tuning. The tuning above is diagnostic. Same earned-fixes rule that kept the circuit breaker
+out of Phase 7.
+
+---
+
 ## Documentation
 
 | file | what it is |
@@ -204,6 +233,10 @@ removed.*
 | [`PROJECT_PLAN.md`](PROJECT_PLAN.md) | the living plan — current state, decisions, ordered backlog, `NEXT ACTION` |
 | [`docs/sabotage/`](docs/sabotage/) | one record per scenario: prediction, result, what was fixed and what was not |
 | [`docs/sabotage/PHASE7_REPORT.md`](docs/sabotage/PHASE7_REPORT.md) | the synthesis — start here |
+| [`docs/load/PHASE8_REPORT.md`](docs/load/PHASE8_REPORT.md) | the load test — breaking TPS, the bottleneck, and the fix that moved it |
+| [`adr/`](adr/) | architecture decision records — two-leg ledger, system accounts, immutable migrations, RabbitMQ fan-out |
+| [`docs/diagrams/`](docs/diagrams/) | flow diagrams — bill payment, gateway webhook, notification |
+| [`learning-playbook.md`](learning-playbook.md) · [`learning-log.md`](learning-log.md) | the method, and the per-session log |
 | [`CLAUDE.md`](CLAUDE.md) | rules for AI agents working in this repo |
 
 ---
@@ -215,5 +248,15 @@ service, RabbitMQ for events, Docker Compose only — no Kubernetes, no Spring C
 gold-plating. The external gateway, biller and SMS/email provider are mocks under
 `scaffolding/`.
 
-A fourth service (transaction history) is parked. Everything under `scaffolding/` is test
-infrastructure, not product.
+**Service #4 is a customer service** (decided 10 Sep). Transaction history was dropped from
+this project and parked to a separate Kafka project — it needs the event stream that project
+exists to build. An event-fed archive/warehouse was proposed and **parked to the same place**:
+the instinct is right, but it breaks the RabbitMQ-only constraint, and the thing actually
+needed today is two SQL queries, not a warehouse.
+
+Everything under `scaffolding/` is test infrastructure, not product — the three simulators and
+the Phase 8 load harness.
+
+**Status:** two of the three [definition-of-done](PROJECT_PLAN.md) gates are closed. The
+sabotage log and the load report are signed off; the remaining gate is **auth**, which is in
+progress. QuickPay is not done.

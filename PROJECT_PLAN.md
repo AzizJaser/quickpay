@@ -1211,7 +1211,7 @@ Money was never at risk at any point — the wallet's UNIQUE constraint held thr
 
 ---
 
-## ⏹ DEFINITION OF DONE (rev 2 — DRAFT: confirm or rewrite in your own words, then delete this marker)
+## ⏹ DEFINITION OF DONE — ✍️ **ADOPTED 2026-09-10** (confirmed as written; no longer a draft)
 
 QuickPay is **done** when all three are true:
 1. All **seven business requirements** are ✅ — or explicitly closed out in the sponsor
@@ -1225,7 +1225,22 @@ QuickPay is **done** when all three are true:
    ✅ **MET 10 Sep — 1560 TPS, bottleneck named (database CPU), +19.7% from two config
    changes, and one change that moved it 11% the WRONG way.**
 
-⚠️ **Two of the three gates are closed. The remaining work is a decision, not a build.**
+### Signed status at adoption — 2026-09-10
+
+| gate | state |
+|---|---|
+| 1 · seven business requirements | 🟡 **OPEN** — 5 done, **#6 closed out** by decisions-log entry 6, **#1 auth still open** |
+| 2 · sabotage log | ✅ **MET 9 Sep** — 14 runs, ~56% predicted, every surprise explained |
+| 3 · load report | ✅ **MET 10 Sep** — 1560 TPS, bottleneck named, +19.7% and one −11% |
+
+⚠️ **Two of three gates are closed. QuickPay is NOT done.** Gate 1 requires **auth** to be
+either built or explicitly closed out in the decisions log. It is now **in progress**, not
+deferred — decisions-log entry 6 gives it an owner (the customer service), and the plan's
+original justification for deferring it ("purely additive") was **withdrawn on 10 Sep** as
+false of authorization.
+
+**Adopting this definition does not declare the project finished.** It fixes the finish line
+so it cannot move — which is the entire point of writing one down.
 
 *(Shape lifted from the playbook's own Q1–Q2 milestones. Learning projects don't ship —
 without this line they dissipate.)*
