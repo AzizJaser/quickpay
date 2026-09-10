@@ -31,6 +31,9 @@ services:
       # SPRING_DATASOURCE_URL onto spring.datasource.url, so no application code changes.
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/wallet
       RABBITMQ_HOST: rabbitmq
+      # Phase 8 knob. Spring's default is 10 and application.yml does not set it.
+      #   HIKARI_POOL=50 docker compose -f ... up -d wallet-service
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: ${HIKARI_POOL:-10}
     ports:
       - "8080:8080"
     depends_on:

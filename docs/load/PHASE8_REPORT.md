@@ -81,6 +81,16 @@ endpoint — so any gap between the two numbers is attributable to the flow, not
 
 ---
 
+### E1 prediction — raising the Hikari pool 10 → 50 ⚠️ written before the run
+
+Learner, verbatim: *"nothing will change, it's not the bottleneck. the db matched the app"*
+
+A direct test of Q2. If the pool were the constraint, 5× the connections would move the
+ceiling substantially. The supporting observation — that wallet-service and wallet-db pinned
+their 200% CPU limits **together** — is the reason to expect nothing.
+
+---
+
 ## 3 · What actually happened
 
 *(pending)*
