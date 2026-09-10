@@ -5,7 +5,25 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-06 (rev 15 — seven scenario-runs. Still zero protections built; topic #5 reframed as instrumentation)**
+> Last updated: **2026-09-10 (rev 16 — Phases 7 and 8 COMPLETE. Definition of done SIGNED,
+> 2 of 3 gates closed. Next: auth, with a customer service as #4.)**
+>
+> **State in one paragraph.** The build is done and merged to `main`: wallet, bill and
+> notification services, three databases, RabbitMQ, three simulators, ADRs and diagrams.
+> **Phase 7 ran 14 sabotage scenarios** (~56% predicted, every surprise explained) and built
+> **four** protections — bulk inquiry, `scheduling.pool.size`, `mandatory` + returns callback,
+> and a two-sided settlement window — while **deliberately refusing a circuit breaker across
+> five scenarios**. **Phase 8 measured P2P at ~1560 TPS against a 500 TPS requirement (3.1×
+> over)**, named the bottleneck (database CPU) and showed the pool "fix" the wrong diagnosis
+> implied makes it **11% worse**. The golden rule has never moved: zero drift and zero
+> duplicate keys across ~929,000 load-test transfers.
+>
+> **Next: requirement #1, auth** — and it is *not* "a filter in front of the controllers".
+> `LedgerEntryController` takes `debitedWalletNumber` from the request body with no notion of
+> a caller anywhere, so the missing rule is an **authorization** rule on the money path.
+> Decisions 6 and 7 (10 Sep) make **service #4 a customer service** and park **history and any
+> Kafka/DWH work** to the separate Kafka project. **Design questions are open and unanswered —
+> see the NEXT ACTION block.**
 
 ---
 
@@ -1279,7 +1297,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 | 3 | P2P transfer, instant; app auto-retries after 5s | ✅ done (idempotency key makes retry safe) |
 | 4 | Bill payment via slow (≤60s) flaky biller; never lose customer money, never show "paid" falsely | ✅ **done 2026-07-01** |
 | 5 | Notifications on every completed transaction; channel fails often, must never block a payment | ✅ **done 3 Sep** — service #3, transactional outbox + relay, retry job, never in the money path |
-| 6 | History + monthly statement per customer | ⛔ not started |
+| 6 | History + monthly statement per customer | ✅ **CLOSED OUT 10 Sep** — decisions log entry 6: dropped from this project, parked to the Kafka project; #4 reassigned to a **customer service** |
 | 7 | Golden rule — every movement explainable, finance will audit | ✅ structurally enforced |
 
 **Non-functional:** P2P targets 500 TPS at peak — ✅ **measured 1560 TPS sustained (3.1× over)** on a 2-CPU budget, Phase 8; every payment op safe to retry ✅ (S12: 20 concurrent duplicate attacks, zero double charges); full audit trail ✅.
@@ -1289,7 +1307,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 - Spring Boot 3 + PostgreSQL, **one database per service**
 - **RabbitMQ** for async messaging (Kafka is a different project)
 - Docker Compose only — no K8s, no Spring Cloud
-- **Maximum 4 services** (currently using 2)
+- **Maximum 4 services** — using **3** (wallet, bill, notification); **#4 is the customer service**, decided 10 Sep
 - External gateway + biller are mocks (AI-built, permitted scaffolding)
 
 ---
@@ -1376,13 +1394,13 @@ UNKNOWN(503)→parked, UNKNOWN(timeout)→**recovered by the sweep**.
 
 | Phase | Deliverable | Status |
 |---|---|---|
-| 0 | Sponsor interrogation → decisions log | ⛔ skipped (log still empty) |
+| 0 | Sponsor interrogation → decisions log | 🟡 interrogation skipped, but **the log is no longer empty — 7 entries**, incl. RabbitMQ fan-out (#1), customer service as #4 (#6), Kafka/DWH parked (#7) |
 | 1 | Data-ownership map | ⛔ skipped |
 | 2 | Decomposition + 3 sequence diagrams | 🟡 partial — bill-payment + gateway-webhook diagrams exist; no P2P diagram, no boxes-and-arrows |
 | 3 | Schemas (DDL) | ✅ wallet V1–V10, bill V1 |
 | 4 | Contracts (OpenAPI + message schemas) | 🟡 endpoints exist; **no OpenAPI, no async schemas** |
 | 5 | Walking skeleton in Compose | ✅ done, CI runs `mvn verify` |
-| 6 | Build flows | 🟡 top-up ✅ P2P ✅ withdrawal ✅ webhook ✅ bill-pay ✅ — **notifications ⛔** |
+| 6 | Build flows | ✅ top-up · P2P · withdrawal · webhook · bill-pay · **notifications ✅ (service #3, 3 Sep)** |
 | 7 | Sabotage (~12 scenarios, predict vs outcome log) | ✅ **DONE 9 Sep — 14 runs**, `docs/sabotage/PHASE7_REPORT.md` |
 | 8 | Load test (k6, find breaking TPS on P2P) | ✅ **DONE 10 Sep — 1560 TPS**, `docs/load/PHASE8_REPORT.md` |
 
