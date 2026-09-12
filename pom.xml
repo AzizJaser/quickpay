@@ -21,6 +21,7 @@
         <module>wallet-service</module>
         <module>bill-service</module>
         <module>notification-service</module>
+        <module>customer-service</module>
         <module>scaffolding/gateway-simulator</module>
         <module>scaffolding/biller-simulator</module>
         <module>scaffolding/provider-simulator</module>

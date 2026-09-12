@@ -56,6 +56,32 @@ services:
       timeout: 3s
       retries: 5
 
+  # Separate Postgres for the customer service (its own data, on host port 5435).
+  # Service #4 (decisions-log entry 6). It owns customer identity and sessions — ADR-0006:
+  # the customer service authenticates the human; wallet and bill authenticate the *service*
+  # and the wallet verifies that the asserted cif owns the named wallet.
+  #
+  # Sessions live HERE, in Postgres, not in Redis. Redis is not earned: the ownership check
+  # needs no cache (the cif arrives with the row lockOrThrow already loads), and "sessions
+  # belong in Redis" is the same shape as "we need a circuit breaker" — a standard answer
+  # adopted before anything measured the need. Five scenarios refused that one.
+  customer-db:
+    image: postgres:16
+    container_name: quickpay-customer-db
+    environment:
+      POSTGRES_DB: customer
+      POSTGRES_USER: customer
+      POSTGRES_PASSWORD: customer
+    ports:
+      - "5435:5432"
+    volumes:
+      - customer_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customer -d customer"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Message broker for domain-event fan-out (ADR-0005): the wallet and bill service
   # publish; notifications and history consume.
   #   AMQP (apps connect here) : localhost:5672
@@ -80,6 +106,7 @@ services:
       retries: 5
 
 volumes:
+  customer_pgdata:
   wallet_pgdata:
   bill_pgdata:
   rabbit_data:
