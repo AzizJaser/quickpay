@@ -22,8 +22,8 @@
 > `LedgerEntryController` takes `debitedWalletNumber` from the request body with no notion of
 > a caller anywhere, so the missing rule is an **authorization** rule on the money path.
 > Decisions 6 and 7 (10 Sep) make **service #4 a customer service** and park **history and any
-> Kafka/DWH work** to the separate Kafka project. **Design questions are open and unanswered —
-> see the NEXT ACTION block.**
+> Kafka/DWH work** to the separate Kafka project. **Auth is now DESIGNED — `adr/0006`** — and the
+> remaining work is a build, not a decision.
 
 ---
 
@@ -1292,7 +1292,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 
 | # | Requirement | Status |
 |---|---|---|
-| 1 | Accounts — customers hold a SAR wallet (thin auth) | 🟡 wallets ✅, **no auth** |
+| 1 | Accounts — customers hold a SAR wallet (thin auth) | 🟡 wallets ✅ · **auth DESIGNED 12 Sep** (ADR-0006), not yet built |
 | 2 | Top-up via async gateway; callbacks may duplicate or never arrive | ✅ done (HMAC webhook + idempotency) |
 | 3 | P2P transfer, instant; app auto-retries after 5s | ✅ done (idempotency key makes retry safe) |
 | 4 | Bill payment via slow (≤60s) flaky biller; never lose customer money, never show "paid" falsely | ✅ **done 2026-07-01** |
@@ -1546,6 +1546,43 @@ be torn up to reach the target. The baseline conforms to the target architecture
    cost can be REMOVED.*
 
    **Parked alongside history, for the same reason and in the same place.**
+
+8. **Auth — how identity works. → RESOLVED 2026-09-12, see `adr/0006-auth-bff-owns-identity-wallet-verifies-ownership.md`.**
+
+   **The BFF authenticates the human; the wallet authenticates the caller and verifies that
+   the asserted cif owns the named wallet.** Two checks, two places.
+
+   | | |
+   |---|---|
+   | customer-service (#4) | BFF — owns customers and sessions, authenticates the human |
+   | wallet | authenticates the **service**, verifies **cif owns wallet**, authenticates no human |
+   | service identity | **per-service static secret + scopes** — bill-service loses `transfer` |
+   | `(walletNumber, cif)` | in the **request body**, on every debit of a customer wallet |
+   | ownership checked | `betweenWallets`, `top-up`, `withdraw`, **and `hold`** (cif threaded BFF → bill → wallet) |
+   | scope-only | `settle`, `revers` — authority inherited from the ownership-checked hold |
+   | failed ownership | **403** to the BFF, which must translate it before a customer sees it |
+   | sessions | **Postgres**, not Redis — not earned |
+   | background jobs | bill-service's own credential |
+
+   **The ownership check costs zero extra queries** — `lockOrThrow` already loads the row to
+   take the lock, so the cif arrives with it.
+
+   **Rejected:** forwarding the session for the wallet to validate — that puts a synchronous
+   call on the money path and makes customer-service a hard dependency of every transfer, the
+   coupling rejected for notifications in S10. **Deferred:** token exchange (RFC 8693), the
+   rigorous answer, with a named trigger — a second channel calling the wallet directly.
+
+   ⚠️ **Two assumptions, written down rather than assumed:**
+   1. **The wallet cannot detect a BFF session mix-up.** A mismatched `(cif, wallet)` pair is
+      rejected; a correctly-matched pair for the wrong person is indistinguishable from a
+      legitimate request.
+   2. **Network isolation** — the model assumes services are unreachable except through the
+      BFF. **Currently false:** `docker-compose.load.yml` publishes `8080:8080`.
+
+   **Still open, deliberately small:** (a) a customer transfer must not name an internal
+   wallet — no scope can express it, `is_internal` is already on the loaded row; (b) whether
+   the ownership check runs before or after the row lock — Phase 8 measured `Lock:tuple`
+   contention as real.
 
 ---
 
