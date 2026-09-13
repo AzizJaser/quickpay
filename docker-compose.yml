@@ -68,6 +68,14 @@ services:
   customer-db:
     image: postgres:16
     container_name: quickpay-customer-db
+    # wal_level=logical is what makes CDC possible: it puts enough information in the
+    # write-ahead log for a decoder to reconstruct row changes. The default is 'replica',
+    # which carries enough to rebuild a physical standby but NOT enough to say
+    # "column x changed from a to b". Requires a restart — it is not settable at runtime.
+    command: >
+      postgres -c wal_level=logical
+               -c max_replication_slots=4
+               -c max_wal_senders=4
     environment:
       POSTGRES_DB: customer
       POSTGRES_USER: customer
@@ -105,7 +113,74 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---- CHANGE DATA CAPTURE: customer-db -> RabbitMQ (decisions-log entry 9) ----
+  #
+  # Debezium Server reads customer-db's write-ahead log and publishes row changes to the
+  # RabbitMQ you already run. NOT Kafka: Debezium's usual deployment is Kafka Connect, and
+  # decision 7 parked Kafka. Debezium SERVER is the standalone variant with pluggable sinks,
+  # so this is CDC without adopting Kafka.
+  #
+  # WHY CDC AT ALL, given you already built a transactional outbox twice? Because they solve
+  # the SAME problem — the dual-write problem — and seeing both is the point. The outbox
+  # publishes an event you designed, via a relay you control. CDC publishes a row change,
+  # read from the WAL, with no application involvement at all.
+  #
+  # ⚠️ THE FAILURE MODE TO KNOW ABOUT, and a Phase 7 scenario waiting to happen:
+  # a replication slot pins the WAL. If this container stops while the database keeps
+  # writing, Postgres CANNOT recycle WAL segments the slot still needs — pg_wal grows until
+  # the disk fills and the database stops accepting writes. Stopping a consumer normally
+  # causes a backlog; stopping THIS consumer can take the database down.
+  #   watch it with:  select slot_name, active,
+  #                          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+  #                   from pg_replication_slots;
+  debezium:
+    image: debezium/server:2.7.3.Final
+    container_name: quickpay-debezium
+    depends_on:
+      customer-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      # --- sink: the RabbitMQ already in this compose file ---
+      DEBEZIUM_SINK_TYPE: rabbitmq
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_HOST: rabbitmq
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_PORT: 5672
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_USERNAME: quickpay
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_PASSWORD: quickpay
+      DEBEZIUM_SINK_RABBITMQ_EXCHANGE: quickpay.cdc
+      DEBEZIUM_SINK_RABBITMQ_AUTODELETE: "false"
+      # Without this the routing key is EMPTY, so a topic exchange can only be bound with
+      # '#' and no consumer can filter by table or operation. With it, the key becomes the
+      # topic name: quickpay.customer.public.customers
+      DEBEZIUM_SINK_RABBITMQ_ROUTINGKEYFROMTOPICNAME: "true"
+
+      # --- source: customer-db's WAL ---
+      DEBEZIUM_SOURCE_CONNECTOR_CLASS: io.debezium.connector.postgresql.PostgresConnector
+      DEBEZIUM_SOURCE_DATABASE_HOSTNAME: customer-db
+      DEBEZIUM_SOURCE_DATABASE_PORT: 5432
+      DEBEZIUM_SOURCE_DATABASE_USER: customer
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: customer
+      DEBEZIUM_SOURCE_DATABASE_DBNAME: customer
+      DEBEZIUM_SOURCE_TOPIC_PREFIX: quickpay.customer
+      # pgoutput ships inside Postgres 10+ — no extension to install, unlike decoderbufs/wal2json
+      DEBEZIUM_SOURCE_PLUGIN_NAME: pgoutput
+      DEBEZIUM_SOURCE_SLOT_NAME: quickpay_customer_slot
+      DEBEZIUM_SOURCE_PUBLICATION_NAME: quickpay_customer_pub
+      # ⬇️ THE ONE LINE TO REVISIT. Capturing `customers` directly means the notification
+      #    service sees customer-service's COLUMN NAMES — rename a column and you break it.
+      #    The production-grade alternative is to capture an OUTBOX table instead, so the
+      #    consumer receives an event you designed. Debezium ships an outbox router for it.
+      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: public.customers
+      # Where Debezium remembers how far it has read. On a named volume so a container
+      # restart resumes rather than re-snapshotting the whole table.
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
+      DEBEZIUM_SOURCE_OFFSET_FLUSH_INTERVAL_MS: 0
+    volumes:
+      - debezium_data:/debezium/data
+
 volumes:
+  debezium_data:
   customer_pgdata:
   wallet_pgdata:
   bill_pgdata:
