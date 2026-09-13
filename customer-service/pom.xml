@@ -40,9 +40,11 @@
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
-        <!-- RabbitMQ — this service PUBLISHES customer events so the notification service can
-             keep its replicated copy of contact details up to date (data-ownership option A).
-             Notification also inquires synchronously on a cache miss. -->
+        <!-- RabbitMQ — this service publishes customer events through a RELAY reading its
+             own outbox table, the same pattern as the wallet and bill services.
+             CDC via Debezium was built first and measured (decisions-log entry 9); the relay
+             won on these requirements. The CDC config is kept behind a compose profile as a
+             reference, not as part of the running system. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>

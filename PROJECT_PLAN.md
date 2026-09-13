@@ -1639,6 +1639,59 @@ be torn up to reach the target. The baseline conforms to the target architecture
    **Candidate sabotage scenario S13**, and a genuinely different shape from anything Phase 7
    found.
 
+   ---
+
+   ### 🔻 VERDICT AFTER BUILDING IT — 2026-09-13: **use the relay outbox, not CDC.**
+
+   **On this project's requirements the relay outbox is the better engineering choice, and
+   CDC exists here to have learned the difference.** Anyone reading this decision should not
+   copy CDC into a system that did not need it.
+
+   **What CDC genuinely wins**, and it is more than first assumed:
+   - **Lower latency.** The relay is `findTop100By…` on a `@Scheduled(fixedDelay)`, so mean
+     latency is about half the poll interval, forever. CDC is pushed off the WAL.
+   - **No throughput ceiling.** S07b measured the relay's real ceiling at **50 events/sec**
+     (100 rows every 2 s) — a limit only visible once the scheduler blocking was fixed.
+   - **No idle cost.** The relay polls all night whether or not anything happened.
+   - **No relay to get wrong.** That code has bitten twice already: S07 (stopped 39.3 s
+     sharing a scheduler thread) and S08 (marked `sent_at` on messages the broker discarded).
+   - **It sees writes the application did not make** — a DBA's `UPDATE`, a batch job.
+
+   **Why it still loses here:**
+   - ⚠️ **Pointing CDC at an outbox table throws away its main advantage.** You capture only
+     what your own code deliberately wrote — the same scope as the relay. The decoupling was
+     bought back by paying the benefit away.
+   - **Four config landmines in one session**, none documented obviously: the sink does not
+     create the exchange; `routingKeyFromTopicName` or the routing key is empty;
+     `${routedByValue}` collides with Quarkus config expansion and dies as a bare NPE;
+     `schemas.enable=false` **and** `expand.json.payload=true` are both required.
+   - **It lost an event during setup**, unrecoverably.
+   - **It introduces a way to take the database down** that the relay simply does not have —
+     a stalled slot fills the disk.
+   - **No per-event delivery signal in the application.** ⚠️ Though note S08 proved `sent_at`
+     was never one either: the relay marked it while RabbitMQ silently discarded three
+     messages. *The only thing that ever told the truth is the S10 set difference* —
+     publisher-recorded events MINUS consumer-processed events — and that works for both
+     designs, because `processed_events.message_id` is the outbox `event_id`.
+
+   **CDC earns its keep when you cannot change the writer** — a legacy application, a
+   third-party system, a database many services write to. There, "no application code" is not
+   a nicety, it is the only option. That is not this system.
+
+   **Consequences of the reversal:**
+   - customer-service publishes through a **relay reading `customer_outbox`**, the same
+     pattern as wallet and bill. `spring-boot-starter-amqp` is back in its pom.
+   - `customer_outbox` **needs a `sent_at` column after all** — there is a relay again, and
+     something must mark what it published. V1 had not been applied, so it is edited in place
+     rather than superseded (ADR-0003 binds only once a migration has run).
+   - The Debezium service is **kept behind a compose profile** (`--profile cdc`) so the
+     working configuration survives as a reference, and its replication slot was dropped so
+     it stops pinning WAL.
+   - ⚠️ **The relay brings back the two failure modes Phase 7 already measured**, and they
+     must not be re-learned: set `spring.task.scheduling.pool.size` before adding a second
+     `@Scheduled` job (S07), and remember `sent_at` means *handed to the broker*, not
+     *delivered* (S08).
+
 ---
 
 ## 6. Remaining work — ordered increments

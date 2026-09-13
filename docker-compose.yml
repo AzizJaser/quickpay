@@ -133,7 +133,15 @@ services:
   #   watch it with:  select slot_name, active,
   #                          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
   #                   from pg_replication_slots;
+  # ⚠️ NOT STARTED BY DEFAULT — see decisions-log entry 9.
+  # CDC was built to LEARN it, and the verdict after building it was that the relay outbox
+  # is the better choice for this project. Kept behind a profile so the working
+  # configuration survives as a reference; it is not part of the running system.
+  #   docker compose --profile cdc up -d debezium
+  # Leaving it running is not free: its replication slot pins WAL, and if the container
+  # stops while the database keeps writing, pg_wal grows until the disk fills.
   debezium:
+    profiles: ["cdc"]
     image: debezium/server:2.7.3.Final
     container_name: quickpay-debezium
     depends_on:
@@ -195,6 +203,9 @@ services:
 
       DEBEZIUM_TRANSFORMS: outbox
       DEBEZIUM_TRANSFORMS_OUTBOX_TYPE: io.debezium.transforms.outbox.EventRouter
+      # These names must match V1__customer_and_outbox.sql exactly. They follow Debezium's
+      # own convention (aggregatetype/aggregateid, no underscores) rather than this
+      # project's snake_case, so the config reads the way Debezium's docs do.
       DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_ID: id
       DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_KEY: aggregateid
       DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TYPE: type
@@ -202,6 +213,10 @@ services:
       # The payload column is jsonb, which Debezium types as a STRING. Without this the
       # consumer receives a JSON string containing JSON and has to parse twice.
       DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_EXPAND_JSON_PAYLOAD: "true"
+      # V1 carries a correlation_id column; promote it to a message header so a single grep
+      # still follows one request across the customer → notification hop. Without this that
+      # hop would be the only dark stretch left after the August traceability work.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELDS_ADDITIONAL_PLACEMENT: correlation_id:header
       DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: aggregatetype
       # NOT setting route.topic.replacement deliberately. Its default is
       # 'outbox.event.${routedByValue}', which Debezium expands itself. Setting it here
