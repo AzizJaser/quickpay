@@ -47,6 +47,35 @@ regression with a plausible story attached.
 does not need tuning. The +19.7% is diagnostic. Same earned-fixes rule that kept the circuit
 breaker out of Phase 7.
 
+### 🔨 IN PROGRESS — customer-service (#4), branch `feat/customer-service`
+
+**Scaffolding and schema done; no service logic yet.**
+
+| done | remaining |
+|---|---|
+| `pom.xml`, root module, `customer-db` on 5435 | `Customer` entity, repository, service, controller |
+| `application.yml` — port 8083, Flyway, validate-only | the relay job + RabbitMQ config + `Topology` |
+| **V1** — `customers` + `customer_outbox` + partial index | sessions table + login (increment 2) |
+| CDC built, measured, and **reversed** — see decision 9 | wallet-side ownership check (increment 5) |
+
+**V1 has NOT been applied** — every dry run was rolled back deliberately, so Flyway records a
+clean first migration on startup.
+
+⚠️ **Carried forward, all previously measured:**
+- `notification.customers.email` is `varchar(50)`; customer-service uses `varchar(254)`. A
+  long address will register fine and **fail on the consumer** — S10 arm B measured that as
+  5 attempts burned in 25 s and a terminal `FAILED` nothing revisits. Needs a notification
+  migration **before** the first replicated event.
+- **Set `spring.task.scheduling.pool.size` before the second `@Scheduled` job** (relay +
+  session expiry = two). S07 measured the default single thread stopping a relay for 39.3 s.
+- `event_type` values must be routing keys in the bill style (`customer.registered`), because
+  `NotificationMessage.fromRoutingKey` **throws** on an unknown key rather than shipping
+  generic text.
+- The outbox is **never pruned** — nothing reads it after the relay marks `sent_at`. Decide
+  before the first million rows.
+
+---
+
 **▶ NEXT: AUTH (requirement #1), with a CUSTOMER SERVICE as #4.** Two decisions taken
 10 Sep — see decisions log entries **6** and **7**:
 
