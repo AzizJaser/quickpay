@@ -1584,6 +1584,61 @@ be torn up to reach the target. The baseline conforms to the target architecture
    the ownership check runs before or after the row lock — Phase 8 measured `Lock:tuple`
    contention as real.
 
+9. **CDC from customer-db to RabbitMQ, on an OUTBOX table. → RESOLVED 2026-09-13.**
+
+   **Debezium Server reads customer-db's WAL and publishes to the existing RabbitMQ.**
+   Explicitly **not Kafka** — Debezium's usual deployment is Kafka Connect; Debezium *Server*
+   is the standalone variant with pluggable sinks, so decision 7 stands unchanged.
+
+   **Why do this at all, having built a transactional outbox twice?** Because CDC and the
+   outbox solve the **same problem** — the dual-write problem — and seeing both is the point.
+   The outbox publishes an event you designed via a relay you control; CDC publishes a row
+   change read from the WAL with no application involvement.
+
+   **It captures an outbox table, NOT `customers`.** Two reasons:
+   1. Capturing `customers` publishes customer-service's **column names** to every consumer.
+   2. **`customers` will hold a BCrypt `password_hash`.** CDC on that table would broadcast
+      every hash to the broker, durable on disk in RabbitMQ, readable by anything bound to
+      the exchange. **Not negotiable.**
+
+   ⚠️ **A VIEW cannot be used** — the original preference. Demonstrated live:
+   `ERROR: cannot add relation "v_public" to publication / not supported for views`.
+   Logical decoding reads the WAL, and a view generates no WAL — it is a stored query, not
+   stored data. Only real tables produce row changes.
+
+   **Four things found by running it, none obvious from documentation:**
+   - **The RabbitMQ sink does not create the exchange.** It dies with `NOT_FOUND` if one is
+     missing. The consumer should declare it, the way notification's `Topology` already
+     declares `quickpay.events`.
+   - **`routingKeyFromTopicName` is required**, or the routing key is empty and a topic
+     exchange can only be bound with `#`.
+   - **`${routedByValue}` in an env var collides with Quarkus config expansion.** Debezium
+     Server runs on Quarkus, which resolves `${...}` itself, yielding null and a bare
+     `NullPointerException` at bean creation with no useful message. Leave
+     `route.topic.replacement` unset and let Debezium apply its own default.
+   - **`schemas.enable=false` plus `expand.json.payload=true`** are both needed, or the
+     consumer receives a Kafka Connect envelope wrapping a double-encoded JSON string.
+
+   🔴 **AND IT LOST AN EVENT DURING SETUP — the finding worth keeping.** An insert made while
+   the exchange was missing was read from the WAL, failed to publish, crashed the engine, and
+   was skipped on restart. **That is S08 on a new axis:** *read from the WAL ≠ delivered to a
+   consumer.* And it is **worse than the outbox-with-relay**, where an unsent row sits in the
+   table with `sent_at IS NULL` and stays replayable forever. A passed WAL position is gone
+   unless the whole table is re-snapshotted.
+
+   ⚠️ **New failure mode this introduces — a replication slot pins the WAL.** If Debezium
+   stops while the database keeps writing, Postgres cannot recycle WAL segments the slot still
+   needs. `pg_wal` grows until the disk fills and **the database stops accepting writes**.
+   Stopping an ordinary consumer causes a backlog; stopping this one can take the database
+   down. Watch it with:
+   ```sql
+   select slot_name, active,
+          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+   from pg_replication_slots;
+   ```
+   **Candidate sabotage scenario S13**, and a genuinely different shape from anything Phase 7
+   found.
+
 ---
 
 ## 6. Remaining work — ordered increments

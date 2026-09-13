@@ -167,11 +167,48 @@ services:
       DEBEZIUM_SOURCE_PLUGIN_NAME: pgoutput
       DEBEZIUM_SOURCE_SLOT_NAME: quickpay_customer_slot
       DEBEZIUM_SOURCE_PUBLICATION_NAME: quickpay_customer_pub
-      # ⬇️ THE ONE LINE TO REVISIT. Capturing `customers` directly means the notification
-      #    service sees customer-service's COLUMN NAMES — rename a column and you break it.
-      #    The production-grade alternative is to capture an OUTBOX table instead, so the
-      #    consumer receives an event you designed. Debezium ships an outbox router for it.
-      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: public.customers
+      # Capture the OUTBOX table, never `customers` itself (decisions-log entry 9).
+      #
+      # Two reasons, and the second is not negotiable:
+      #  1. Capturing `customers` publishes customer-service's COLUMN NAMES to every
+      #     consumer — rename one and notification breaks across a service boundary.
+      #  2. `customers` will hold a BCrypt `password_hash`. CDC on that table would
+      #     broadcast every password hash to the broker, durable on disk in RabbitMQ,
+      #     readable by anything that binds to the exchange.
+      #
+      # A VIEW cannot be used — Postgres rejects it:
+      #   ERROR: cannot add relation "v" to publication / not supported for views
+      # Logical decoding reads the WAL, and a view generates no WAL. Only real tables do.
+      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: public.customer_outbox
+
+      # --- Outbox Event Router: unwrap the outbox row into the event it carries ---
+      # Without this, consumers receive a Debezium envelope describing a row INSERT
+      # (before/after/op/source). With it, they receive the `payload` column as the message
+      # body, routed by `aggregatetype`. The consumer sees an event you designed.
+      # Without these the message body is a Kafka Connect envelope —
+      # {"schema":{...},"payload":"{...}"} — and the consumer has to unwrap twice.
+      # With them it is the event JSON exactly as written to the outbox row.
+      DEBEZIUM_FORMAT_VALUE: json
+      DEBEZIUM_FORMAT_VALUE_SCHEMAS_ENABLE: "false"
+      DEBEZIUM_FORMAT_KEY: json
+      DEBEZIUM_FORMAT_KEY_SCHEMAS_ENABLE: "false"
+
+      DEBEZIUM_TRANSFORMS: outbox
+      DEBEZIUM_TRANSFORMS_OUTBOX_TYPE: io.debezium.transforms.outbox.EventRouter
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_ID: id
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_KEY: aggregateid
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TYPE: type
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_PAYLOAD: payload
+      # The payload column is jsonb, which Debezium types as a STRING. Without this the
+      # consumer receives a JSON string containing JSON and has to parse twice.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_EXPAND_JSON_PAYLOAD: "true"
+      DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: aggregatetype
+      # NOT setting route.topic.replacement deliberately. Its default is
+      # 'outbox.event.${routedByValue}', which Debezium expands itself. Setting it here
+      # fails: Quarkus (Debezium Server's runtime) uses ${...} for ITS OWN config
+      # expansion, so the placeholder is resolved before Debezium ever sees it, yields
+      # null, and the server dies with a bare NullPointerException at bean creation.
+      # Routing key therefore becomes: outbox.event.<aggregatetype>
       # Where Debezium remembers how far it has read. On a named volume so a container
       # restart resumes rather than re-snapshotting the whole table.
       DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
