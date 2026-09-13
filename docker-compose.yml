@@ -203,12 +203,14 @@ services:
 
       DEBEZIUM_TRANSFORMS: outbox
       DEBEZIUM_TRANSFORMS_OUTBOX_TYPE: io.debezium.transforms.outbox.EventRouter
-      # These names must match V1__customer_and_outbox.sql exactly. They follow Debezium's
-      # own convention (aggregatetype/aggregateid, no underscores) rather than this
-      # project's snake_case, so the config reads the way Debezium's docs do.
-      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_ID: id
-      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_KEY: aggregateid
-      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TYPE: type
+      # These names must match V1__customer_and_outbox.sql exactly.
+      # V1 was later reshaped to be identical to outbox_bill_notification (event_id /
+      # event_type / sent_at / payload / correlation_id / created_at) so the project has ONE
+      # outbox shape and one relay pattern. Debezium's own convention (aggregatetype /
+      # aggregateid) is therefore gone, and this config follows the table, not the docs.
+      # No event-key field is set: there is no aggregate-id column to use as one.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_ID: event_id
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TYPE: event_type
       DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_PAYLOAD: payload
       # The payload column is jsonb, which Debezium types as a STRING. Without this the
       # consumer receives a JSON string containing JSON and has to parse twice.
@@ -217,7 +219,7 @@ services:
       # still follows one request across the customer → notification hop. Without this that
       # hop would be the only dark stretch left after the August traceability work.
       DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELDS_ADDITIONAL_PLACEMENT: correlation_id:header
-      DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: aggregatetype
+      DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: event_type
       # NOT setting route.topic.replacement deliberately. Its default is
       # 'outbox.event.${routedByValue}', which Debezium expands itself. Setting it here
       # fails: Quarkus (Debezium Server's runtime) uses ${...} for ITS OWN config
