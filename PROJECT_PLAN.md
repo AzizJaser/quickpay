@@ -5,7 +5,7 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-16 (rev 17 — customer service #4 registers and publishes.
+> Last updated: **2026-09-16 (rev 18 — customer service #4: increment 1 COMPLETE, replicating.
 > Auth DESIGNED (ADR-0006), not yet built. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
 >
 > **State in one paragraph.** `main` holds the finished build — wallet, bill and notification
@@ -16,13 +16,13 @@
 > CPU, and showed the pool "fix" the wrong diagnosis implied makes it **11% worse**. The golden
 > rule has never moved: zero drift, zero duplicate keys, ~929,000 load-test transfers.
 >
-> **In flight on `feat/customer-service`:** service #4 registers a customer and publishes its
-> outbox event. Six events sit in `notification.customer-events` with **no consumer** — which
-> is where the last measurement came from: with the queue bound and nothing reading it, there
-> were **zero UNROUTABLE lines** and every outbox row read `sent_at = t`.
+> **In flight on `feat/customer-service`:** increment 1 is **complete** — register → outbox →
+> relay → queue → consumer → replica, verified end to end, with correlation ids surviving the
+> whole chain. Measured on the way: with a queue bound and nothing reading it there were
+> **zero UNROUTABLE lines** while every outbox row read `sent_at = t`.
 > **`sent_at` means handed to the broker, nothing more.**
 >
-> **Next: the consumer**, then sessions/login and the wallet-side ownership check. Auth is
+> **Next: sessions and login (increment 2)**, then the wallet-side ownership check. Auth is
 > **designed** (`adr/0006`) and the remaining work is a build, not a decision — the missing
 > rule is *authorization* on the money path, since `LedgerEntryController` still takes
 > `debitedWalletNumber` from the request body with no notion of a caller.
@@ -51,23 +51,39 @@ breaker out of Phase 7.
 
 ### 🔨 IN PROGRESS — customer-service (#4), branch `feat/customer-service`
 
-**Registration works end to end and events are published. Nothing consumes them yet.**
+**✅ INCREMENT 1 COMPLETE — the path works end to end.**
 
 ```
 POST /v1/customers  ->  customer row + outbox row (one transaction)
                     ->  relay publishes to quickpay.events
-                    ->  notification.customer-events   6 waiting, 0 consumers
-                    ->  notification.customers         STILL EMPTY
+                    ->  notification.customer-events
+                    ->  listener upserts
+                    ->  notification.customers  ✅ replicated
 ```
+
+**Data-ownership option A is real:** customer-service owns customers, notification holds a
+replica fed by events, no synchronous call on the message path.
+
+Correlation ids survive the whole chain — a header sent to customer-service still tags log
+lines in notification-service after a database column, a relay poll, an AMQP hop and hours
+of queue idle time.
+
+⚠️ **The consumer drops anything it cannot handle** — chosen, not inherited, and verified with
+a poison message (2 log lines, no requeue loop). The consequence is larger than one lost
+notification: a dropped `customer.registered` means the replica never learns that cif, so
+every later money event for that person hits `CustomerNotFoundException` and is dropped too —
+S10 arm A, permanently, for that customer. **Recovery is reconciliation, not retry:**
+`customer_outbox` MINUS `notification.customers` names exactly what never landed.
 
 | ✅ done | ⬜ remaining |
 |---|---|
-| module, `customer-db` 5435, `application.yml` | **the consumer** — `@RabbitListener` on the new queue |
+| module, `customer-db` 5435, `application.yml` | **sessions + login** (increment 2) |
 | **V1 · V2 · V3** applied | sessions + login (increment 2) |
 | entity · repository · service · controller · handlers | session validation (increment 3) |
 | `CorrelationIdFilter` | BFF proxying a wallet call (increment 4) |
 | **the relay** + `QueueCallBack` + exchange config | wallet-side ownership check (increment 5) |
-| **second queue** `notification.customer-events`, bound `customer.*` | cif threaded BFF → bill → wallet (increment 6) |
+| **second queue** + binding + **the consumer** | cif threaded BFF → bill → wallet (increment 6) |
+| ✅ **replication verified end to end** | a dead-letter queue, if dropping ever proves too costly |
 
 **The schema enforces the customer lifecycle in constraints, not code** (V1–V3):
 `ck_cif_format` (`^0[0-9]{9}$`, issued from a capped sequence) · `ck_national_id_format`
