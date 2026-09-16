@@ -5,25 +5,27 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-10 (rev 16 — Phases 7 and 8 COMPLETE. Definition of done SIGNED,
-> 2 of 3 gates closed. Next: auth, with a customer service as #4.)**
+> Last updated: **2026-09-16 (rev 17 — customer service #4 registers and publishes.
+> Auth DESIGNED (ADR-0006), not yet built. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
 >
-> **State in one paragraph.** The build is done and merged to `main`: wallet, bill and
-> notification services, three databases, RabbitMQ, three simulators, ADRs and diagrams.
-> **Phase 7 ran 14 sabotage scenarios** (~56% predicted, every surprise explained) and built
-> **four** protections — bulk inquiry, `scheduling.pool.size`, `mandatory` + returns callback,
-> and a two-sided settlement window — while **deliberately refusing a circuit breaker across
-> five scenarios**. **Phase 8 measured P2P at ~1560 TPS against a 500 TPS requirement (3.1×
-> over)**, named the bottleneck (database CPU) and showed the pool "fix" the wrong diagnosis
-> implied makes it **11% worse**. The golden rule has never moved: zero drift and zero
-> duplicate keys across ~929,000 load-test transfers.
+> **State in one paragraph.** `main` holds the finished build — wallet, bill and notification
+> services, three databases, RabbitMQ, three simulators, six ADRs, 14 sabotage records and two
+> phase reports. **Phase 7** ran 14 scenarios (~56% predicted), built **four** protections and
+> **deliberately refused a circuit breaker across five**. **Phase 8** measured P2P at
+> **~1560 TPS against a 500 TPS requirement** (3.1× over), named the bottleneck as database
+> CPU, and showed the pool "fix" the wrong diagnosis implied makes it **11% worse**. The golden
+> rule has never moved: zero drift, zero duplicate keys, ~929,000 load-test transfers.
 >
-> **Next: requirement #1, auth** — and it is *not* "a filter in front of the controllers".
-> `LedgerEntryController` takes `debitedWalletNumber` from the request body with no notion of
-> a caller anywhere, so the missing rule is an **authorization** rule on the money path.
-> Decisions 6 and 7 (10 Sep) make **service #4 a customer service** and park **history and any
-> Kafka/DWH work** to the separate Kafka project. **Auth is now DESIGNED — `adr/0006`** — and the
-> remaining work is a build, not a decision.
+> **In flight on `feat/customer-service`:** service #4 registers a customer and publishes its
+> outbox event. Six events sit in `notification.customer-events` with **no consumer** — which
+> is where the last measurement came from: with the queue bound and nothing reading it, there
+> were **zero UNROUTABLE lines** and every outbox row read `sent_at = t`.
+> **`sent_at` means handed to the broker, nothing more.**
+>
+> **Next: the consumer**, then sessions/login and the wallet-side ownership check. Auth is
+> **designed** (`adr/0006`) and the remaining work is a build, not a decision — the missing
+> rule is *authorization* on the money path, since `LedgerEntryController` still takes
+> `debitedWalletNumber` from the request body with no notion of a caller.
 
 ---
 
