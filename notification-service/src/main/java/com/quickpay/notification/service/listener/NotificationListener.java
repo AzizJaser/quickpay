@@ -5,20 +5,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quickpay.notification.client.NotificationProviderClient;
 import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
+import com.quickpay.notification.dto.event.CustomerRegistrationEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
-import com.quickpay.notification.dto.response.ProviderResponse;
 import com.quickpay.notification.enums.NotificationState;
-import com.quickpay.notification.enums.NotificationStatus;
 import com.quickpay.notification.exception.CustomerNotFoundException;
 import com.quickpay.notification.repository.CustomerRepository;
 import com.quickpay.notification.repository.ProcessedEventRepository;
 import com.quickpay.notification.service.NotificationService;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 
@@ -27,6 +26,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Component
+@RequiredArgsConstructor
 public class NotificationListener {
 
     private final ProcessedEventRepository processedEventRepository;
@@ -45,13 +45,13 @@ public class NotificationListener {
     private static final Logger logger = LoggerFactory.getLogger(NotificationListener.class);
 
 
-    public NotificationListener(ProcessedEventRepository processedEventRepository, CustomerRepository customerRepository, ObjectMapper objectMapper, NotificationProviderClient notificationProviderClient, NotificationService notificationService){
-        this.processedEventRepository = processedEventRepository;
-        this.customerRepository = customerRepository;
-        this.objectMapper = objectMapper;
-        this.notificationProviderClient = notificationProviderClient;
-        this.notificationService = notificationService;
-    }
+//    public NotificationListener(ProcessedEventRepository processedEventRepository, CustomerRepository customerRepository, ObjectMapper objectMapper, NotificationProviderClient notificationProviderClient, NotificationService notificationService){
+//        this.processedEventRepository = processedEventRepository;
+//        this.customerRepository = customerRepository;
+//        this.objectMapper = objectMapper;
+//        this.notificationProviderClient = notificationProviderClient;
+//        this.notificationService = notificationService;
+//    }
 
 
     @RabbitListener(queues = "${notification.queue-name}")
@@ -67,7 +67,7 @@ public class NotificationListener {
                 Optional<ProcessedEvent> event_present = processedEventRepository.findByMessageId(messageId);
                 if(event_present.isPresent()){ // event found
                     ProcessedEvent event = event_present.get();
-                    Customer customer = notificationService.extractCustomerFromMessage(payload);
+                    Customer customer = notificationService.extractCustomerFromNotificationEvent(payload);
                     if(event.getEmailState().equals(NotificationState.PENDING) || event.getSmsState().equals(NotificationState.PENDING)){
                         notificationService.deliver(event,customer,routingKey);
                     }
@@ -103,6 +103,31 @@ public class NotificationListener {
 
     public NotificationEvent parsingNotificationMessage(String payload) throws JsonProcessingException {
         return  objectMapper.readValue(payload, NotificationEvent.class);
+    }
+
+    @RabbitListener(queues = "${notification.customer-queue-name}")
+    public void customerListener(String payload, @Header(AmqpHeaders.MESSAGE_ID) String messageId,
+                                 @Header(AmqpHeaders.RECEIVED_ROUTING_KEY) String routingKey, @Header(name = AmqpHeaders.CORRELATION_ID, required = false) String correlationId){
+
+        try {
+            if(correlationId == null || correlationId.isBlank()){
+                correlationId = "receive-cust-notific-" + UUID.randomUUID().toString().substring(0,8);
+            }
+            MDC.put(MDC_KEY,correlationId);
+            logger.info("message id {} received with routing key {} and correlation id {}",messageId,routingKey,correlationId);
+            CustomerRegistrationEvent event = notificationService.extractCustomerFromRegistrationEvent(payload);
+            customerRepository.save(new Customer(event.cif(),event.phoneNumber(),event.email(),event.customerName()));
+            logger.info("message id {} received with new customer with cif {} and correlation id {}",messageId,event.cif(),correlationId);
+
+
+        } catch (JsonProcessingException e){
+            logger.error("malformed payload for message {} — dropping", messageId, e);
+
+        } catch (Exception e) {
+            logger.error("unexpected failure handling message {} — dropping", messageId, e);
+        } finally {
+            MDC.remove(MDC_KEY);
+        }
     }
 
 }

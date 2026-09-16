@@ -14,7 +14,6 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,7 +49,7 @@ public class ResendingJob {
             logger.info("list is ready to resending...");
             for(ProcessedEvent eventMap : events.values()){
                 try {
-                    Customer customer = notificationService.extractCustomerFromMessage(eventMap.getPayload());
+                    Customer customer = notificationService.extractCustomerFromNotificationEvent(eventMap.getPayload());
                     String routingKey = eventMap.getRoutingKey();
                     notificationService.deliver(eventMap,customer,routingKey);
                 }catch (CustomerNotFoundException e){

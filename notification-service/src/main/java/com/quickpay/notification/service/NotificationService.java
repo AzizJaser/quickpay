@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quickpay.notification.client.NotificationProviderClient;
 import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
+import com.quickpay.notification.dto.event.CustomerRegistrationEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
 import com.quickpay.notification.dto.response.ProviderResponse;
 import com.quickpay.notification.enums.NotificationMessage;
@@ -13,7 +14,6 @@ import com.quickpay.notification.enums.NotificationStatus;
 import com.quickpay.notification.exception.CustomerNotFoundException;
 import com.quickpay.notification.repository.CustomerRepository;
 import com.quickpay.notification.repository.ProcessedEventRepository;
-import lombok.AllArgsConstructor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -79,9 +79,14 @@ public class NotificationService {
         processedEventRepository.save(event);
     }
 
-    public Customer extractCustomerFromMessage(String payload) throws JsonProcessingException {
+    public Customer extractCustomerFromNotificationEvent(String payload) throws JsonProcessingException {
         NotificationEvent receivedEvent = objectMapper.readValue(payload, NotificationEvent.class);
         return customerRepository.findCustomerByCif(receivedEvent.cif())
                 .orElseThrow(()-> new CustomerNotFoundException(receivedEvent.cif()));
+    }
+
+    public CustomerRegistrationEvent extractCustomerFromRegistrationEvent(String payload) throws JsonProcessingException {
+        CustomerRegistrationEvent customer = objectMapper.readValue(payload, CustomerRegistrationEvent.class);
+        return customer;
     }
 }
