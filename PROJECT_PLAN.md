@@ -49,30 +49,62 @@ breaker out of Phase 7.
 
 ### 🔨 IN PROGRESS — customer-service (#4), branch `feat/customer-service`
 
-**Scaffolding and schema done; no service logic yet.**
+**Registration works end to end and events are published. Nothing consumes them yet.**
 
-| done | remaining |
+```
+POST /v1/customers  ->  customer row + outbox row (one transaction)
+                    ->  relay publishes to quickpay.events
+                    ->  notification.customer-events   6 waiting, 0 consumers
+                    ->  notification.customers         STILL EMPTY
+```
+
+| ✅ done | ⬜ remaining |
 |---|---|
-| `pom.xml`, root module, `customer-db` on 5435 | `Customer` entity, repository, service, controller |
-| `application.yml` — port 8083, Flyway, validate-only | the relay job + RabbitMQ config + `Topology` |
-| **V1** — `customers` + `customer_outbox` + partial index | sessions table + login (increment 2) |
-| CDC built, measured, and **reversed** — see decision 9 | wallet-side ownership check (increment 5) |
+| module, `customer-db` 5435, `application.yml` | **the consumer** — `@RabbitListener` on the new queue |
+| **V1 · V2 · V3** applied | sessions + login (increment 2) |
+| entity · repository · service · controller · handlers | session validation (increment 3) |
+| `CorrelationIdFilter` | BFF proxying a wallet call (increment 4) |
+| **the relay** + `QueueCallBack` + exchange config | wallet-side ownership check (increment 5) |
+| **second queue** `notification.customer-events`, bound `customer.*` | cif threaded BFF → bill → wallet (increment 6) |
 
-**V1 has NOT been applied** — every dry run was rolled back deliberately, so Flyway records a
-clean first migration on startup.
+**The schema enforces the customer lifecycle in constraints, not code** (V1–V3):
+`ck_cif_format` (`^0[0-9]{9}$`, issued from a capped sequence) · `ck_national_id_format`
+(`^[12][0-9]{9}$`) · three **partial** unique indexes `WHERE status <> 'CLOSED'` on
+national_id, email and phone.
 
-⚠️ **Carried forward, all previously measured:**
-- `notification.customers.email` is `varchar(50)`; customer-service uses `varchar(254)`. A
-  long address will register fine and **fail on the consumer** — S10 arm B measured that as
-  5 attempts burned in 25 s and a terminal `FAILED` nothing revisits. Needs a notification
-  migration **before** the first replicated event.
-- **Set `spring.task.scheduling.pool.size` before the second `@Scheduled` job** (relay +
-  session expiry = two). S07 measured the default single thread stopping a relay for 39.3 s.
-- `event_type` values must be routing keys in the bill style (`customer.registered`), because
-  `NotificationMessage.fromRoutingKey` **throws** on an unknown key rather than shipping
-  generic text.
-- The outbox is **never pruned** — nothing reads it after the relay marks `sent_at`. Decide
-  before the first million rows.
+Those partial indexes are what let a closed customer return: old row retained for audit, new
+cif, **same email and phone**. A plain `UNIQUE` made returning impossible — proven, then
+fixed. And the two `CHECK`s keep cif and national_id disjoint (no string starts with both `0`
+and `1`) without resizing columns across **970,358 ledger rows** in two services.
+
+⚠️ **Verified 16 Sep — `mandatory` does NOT mean delivered.** With `customer.*` bound and no
+consumer: **zero UNROUTABLE lines**, queue depth **6**, every outbox row `sent_at = t`, and
+the replica **empty**. Three distinct failure modes, only one of which the callback can see:
+
+| | |
+|---|---|
+| no binding | `mandatory` **fires** — S08, the callback catches it |
+| bound, no consumer | message waits. Honest — the depth is visible |
+| delivered then dropped | **nothing fires** — S10 arm A: 26 ms, one `WARN`, gone |
+
+**`sent_at` means handed to the broker. Nothing more.**
+
+**Carried forward:**
+- ✅ *(closed 15 Sep)* `notification.customers.email` widened to `varchar(254)` — V15
+- ✅ *(closed 16 Sep)* `scheduling.pool.size: 2` set **before** job #2 exists
+- 🔴 **`NotificationMessage` has no `customer.registered` entry.** It throws on unknown keys by
+  design, so if the new consumer ever routes through it the listener's `catch (Exception)`
+  drops the event — S10 arm A exactly. The new consumer should not touch that enum at all.
+- 🔴 **The outbox is never pruned.** Nothing reads it after `sent_at` is set. Decide before the
+  first million rows — and note S10's reconciliation needs those rows to compare against, so
+  delete-immediately would make it impossible.
+- 🟡 Two tidy-ups: `String payload = "";` can be `String payload;`, and the `logger.error`
+  immediately before `throw new ParsingCustomerEventException` double-reports.
+
+**The six queued events are a useful accident** — the consumer will be tested against messages
+it did not produce, the moment it starts. A single field-name disagreement in the payload
+reproduces the `original_entry_id`/`originalEntryId` defect: the class only exercising the
+path can catch.
 
 ---
 
