@@ -22,7 +22,12 @@
 > **zero UNROUTABLE lines** while every outbox row read `sent_at = t`.
 > **`sent_at` means handed to the broker, nothing more.**
 >
-> **Next: sessions and login (increment 2)**, then the wallet-side ownership check. Auth is
+> **Next: sessions and login (increment 2)**, then the wallet-side ownership check. Sessions are
+stateful by decision — a JWT cannot be revoked, and a `BLOCKED` customer holding a live token
+is not acceptable on a money platform. **Blocking or closing deletes the sessions**, in the
+same transaction; see ADR-0006. That makes revocation the *only* enforcement point for a
+block, which depends on the BFF being the sole door — an assumption the same ADR records as
+currently false. Auth is
 > **designed** (`adr/0006`) and the remaining work is a build, not a decision — the missing
 > rule is *authorization* on the money path, since `LedgerEntryController` still takes
 > `debitedWalletNumber` from the request body with no notion of a caller.

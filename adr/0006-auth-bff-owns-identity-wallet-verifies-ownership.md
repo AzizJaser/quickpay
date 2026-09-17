@@ -122,7 +122,41 @@ is rejected by the wallet rather than executed.
 Option 3 (token exchange) is the fix, with a clear trigger: **a second channel calling the
 wallet directly, or the BFF ceasing to be the only front door.**
 
-**⚠️ Second assumption — network isolation.** Per-service secrets prove origin, not authority,
+### Sessions are stateful, and revocation is the ONLY enforcement of a block
+
+**Added 2026-09-17, while building increment 2.**
+
+Sessions live in `customerDB` (decisions-log entry 8), not as JWTs. The reason is revocation:
+a JWT cannot be withdrawn before it expires, and this system has a `BLOCKED` status. With a
+stateless token a blocked customer would keep transacting until their token aged out — on a
+money platform that is not a gap you can shrug at. The usual workaround, a revocation list
+checked per request, *is* the statefulness a JWT was chosen to avoid.
+
+**Decision: blocking or closing a customer DELETES their sessions**, in the same transaction
+as the status change. Both or neither — a committed status change with a failed delete leaves
+exactly the state being prevented: a blocked customer holding live sessions.
+
+The alternative — checking customer status on every session validation — was rejected: session
+lookup is the hottest query in the service (once per authenticated request), and status is
+almost never what changed. Revocation moves that cost to the rare event instead of the common
+one.
+
+⚠️ **This makes session revocation the sole enforcement point for a block**, and that only
+holds because of the assumption below. The chain is:
+
+```
+customer BLOCKED  ->  sessions deleted  ->  BFF cannot authenticate them
+                                        ->  no call reaches the wallet
+                                        ->  the wallet never needs to know about status
+```
+
+**The wallet checks that a cif owns a wallet. It does NOT check that the customer is active** —
+deliberately, per this ADR. So a blocked customer who could reach the wallet *by any other
+path* would not be stopped by anything. Today `wallet-service` publishes `8080` to the host,
+so that path exists. The block is enforced by the BFF being the only door, not by the money
+core.
+
+⚠️ **Second assumption — network isolation.** Per-service secrets prove origin, not authority,
 and a static secret travels on every request. The model assumes the services are unreachable
 except through the BFF. **That is currently false** — `docker-compose.load.yml` publishes
 `8080:8080`, so the wallet is reachable from the host. Removing the `ports:` block makes it
