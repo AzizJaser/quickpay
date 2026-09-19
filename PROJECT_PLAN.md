@@ -43,6 +43,43 @@ currently false. Auth is
 
 ## ▶ NEXT ACTION (update this line every session)
 
+### ◀ **START HERE — 20 Sep. Pick one of three; they are not equally urgent.**
+
+*Session of 19 Sep ended clean: working tree empty, branch `feat/customer-service`, 5 commits
+that day (increments 2, 3, 4, logout, cif backfill). Customer-service is **not finished**.*
+
+**1 · block/close endpoints + session revocation — RECOMMENDED, and small.**
+⚠️ **ADR-0006 currently documents a control that does not exist.** It states session
+revocation is the *sole* enforcement point for a block — but nothing can set a customer to
+`BLOCKED`, so `deleteByCif` sits written and uncalled. The delete must be **in the same
+transaction** as the status change (both or neither; a committed status change with a failed
+delete leaves exactly the state being prevented). Derived deletes are **not** transactional
+by default. This also unblocks Phase 9's **A01**, which is currently gated on work nobody
+has scheduled.
+
+**2 · Tests — customer-service has ZERO.** Not one file in `src/test`. Everything proven on
+19 Sep — the forged-cif evidence, the 35 ms / 2,019 ms failure split, the logout round trip,
+the migration spot checks — lives in commit messages and nowhere that runs again. The
+`pom.xml` already argues this: 15 tests across the other modules all call service layers
+directly, which is why four `WalletController` endpoints returned 500 for weeks while
+staying green. **This service is HTTP; MockMvc belongs here.** First assertion to encode:
+a valid session plus a forged `cif` header/param returns the caller's **own** wallets —
+reading the code failed to catch that bug three times; the request caught it every time.
+
+**3 · Increment 5 — the wallet-side ownership check.** ✅ Unblocked 19 Sep by the cif
+backfill. Mostly wallet-service work. ⚠️ 200 load-pool wallets remain orphaned by design —
+if an increment-5 test reaches for one it fails for reasons unrelated to the code under test.
+
+**Also open, smaller:** "log out everywhere" (`deleteByCif` + endpoint — *earned*: one
+customer held 5 concurrent sessions and logout kills one) · expired-session pruning ·
+`CreateWalletRequest` has no cif `@Pattern`, so non-conforming wallets can still be created
+(when that lands, `seed.sh` must register customers instead of inventing `88…` cifs).
+
+**Parked:** Phase 9 step 0 — `docs/security/THREAT_MODEL.md` has 15 questions awaiting the
+human and 6 reviewer challenges to the plan. Hard stop 24 Oct.
+
+---
+
 ### ✅ PHASE 8 COMPLETE — 10 Sep. 📄 **`docs/load/PHASE8_REPORT.md`**
 
 **P2P sustains ~1560 req/s against a 500 TPS requirement — 3.1× over.** Zero errors, zero
