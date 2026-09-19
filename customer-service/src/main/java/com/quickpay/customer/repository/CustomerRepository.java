@@ -18,4 +18,8 @@ public interface CustomerRepository extends JpaRepository<Customer,String> {
 
     @Query(value = "select nextval('seq_customers_cif')",nativeQuery = true)
     Long getNextSeq();
+
+    Optional<Customer> findByEmailAndStatus(String email, CustomerStatus status);
+
+    Optional<Customer> findByCif(String cif);
 }

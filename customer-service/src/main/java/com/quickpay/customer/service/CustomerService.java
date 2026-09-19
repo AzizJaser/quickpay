@@ -6,11 +6,11 @@ import com.quickpay.customer.config.CustomPasswordEncoder;
 import com.quickpay.customer.domain.Customer;
 import com.quickpay.customer.domain.CustomerOutboxEvent;
 import com.quickpay.customer.dto.event.CustomerRegistrationEvent;
+import com.quickpay.customer.dto.request.CustomerActivateRequest;
 import com.quickpay.customer.dto.request.CustomerRequest;
 import com.quickpay.customer.dto.response.CustomerResponse;
 import com.quickpay.customer.enums.CustomerStatus;
-import com.quickpay.customer.exception.DuplicateNationalIdException;
-import com.quickpay.customer.exception.ParsingCustomerEventException;
+import com.quickpay.customer.exception.*;
 import com.quickpay.customer.repository.CustomerRepository;
 import com.quickpay.customer.repository.OutboxEventRepository;
 import lombok.AllArgsConstructor;
@@ -22,6 +22,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -79,5 +83,42 @@ public class CustomerService {
         logger.info("customer created with cif {} and the event is written with id {} successfully",cif,eventId);
 
         return new CustomerResponse(cif,customer.getCustomerName(),customer.getStatus().toString());
+    }
+
+    @Transactional
+    public CustomerResponse activateCustomer(CustomerActivateRequest request){
+        Customer customer = customerRepository.findByCif(request.cif())
+                .orElseThrow(CustomerNotFoundException::new);
+
+        if(!customer.getStatus().equals(CustomerStatus.PENDING)){
+            switch (customer.getStatus()){
+                case ACTIVE -> {
+                    return new CustomerResponse(customer.getCif(), customer.getCustomerName(), customer.getStatus().toString());
+                }
+                case CLOSED -> {
+                    logger.warn("customer was not found with cif "+customer.getCif());
+                    throw new CustomerClosedException();
+                }
+                case BLOCKED -> {
+                    logger.warn("blocked customer request detected for customer with cif "+customer.getCif());
+                    // sending not found, because we can't tell the blocked customer he/she is blocked.
+                    throw new CustomerNotFoundException();
+                }
+                default -> {
+                    logger.error("NEW STATUS DETECTED WHEN ACTIVATING CUSTOMER -> cif:{} , status:{}",customer.getCif(),customer.getStatus());
+                    throw new RuntimeException("new status detected....");
+                }
+            }
+        }
+
+        if(passwordEncoder.matches(request.password(), customer.getPassword())){
+            customer.setStatus(CustomerStatus.ACTIVE);
+            customer.setUpdatedAt(Timestamp.valueOf(LocalDateTime.now()));
+            customerRepository.save(customer);
+        } else {
+            throw new PasswordNotValidException();
+        }
+
+        return new CustomerResponse(customer.getCif(), customer.getCustomerName(), customer.getStatus().toString());
     }
 }

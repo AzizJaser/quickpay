@@ -55,3 +55,4 @@ logging:
 customer:
   events-exchange: ${CUSTOMER_EVENTS_EXCHANGE:quickpay.events}
   notification-interval-ms: ${CUSTOMER_NOTIFICATION_INTERVAL:2000}
+  session-ttl-minutes: ${CUSTOMER_SESSION_TTL:60}

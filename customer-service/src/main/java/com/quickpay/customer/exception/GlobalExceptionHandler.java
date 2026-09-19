@@ -33,4 +33,44 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(CustomerIsNotActiveException.class)
+    public ProblemDetail handlerCustomerIsNotActiveException(CustomerIsNotActiveException e){
+        logger.warn("Unsuccessful logging attempt due to status for customer with email: {}",e.getEmail());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.FORBIDDEN, e.getMessage());
+        problem.setTitle("Customer status is not active");
+        return problem;
+    }
+
+    @ExceptionHandler(CustomerNotFoundException.class)
+    public ProblemDetail handlerCustomerNotFoundException(CustomerNotFoundException e){
+        logger.warn("customer was not found");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND, e.getMessage());
+        problem.setTitle("Customer was not found");
+        return problem;
+    }
+
+    @ExceptionHandler(CustomerClosedException.class)
+    public ProblemDetail handlerCustomerClosedException(CustomerClosedException e){
+        logger.warn("customer is closed");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Customer is closed");
+        return problem;
+    }
+
+    @ExceptionHandler(PasswordNotValidException.class)
+    public ProblemDetail handlerPasswordNotValidException(PasswordNotValidException e){
+        logger.warn("Password is not correct");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("Password is not correct");
+        return problem;
+    }
+
 }
