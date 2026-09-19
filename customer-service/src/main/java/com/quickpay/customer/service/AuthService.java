@@ -6,7 +6,9 @@ import com.quickpay.customer.dto.request.LoginRequest;
 import com.quickpay.customer.dto.response.LoginResponse;
 import com.quickpay.customer.enums.CustomerStatus;
 import com.quickpay.customer.exception.CustomerIsNotActiveException;
+import com.quickpay.customer.exception.HashingTokenException;
 import com.quickpay.customer.exception.PasswordNotValidException;
+import com.quickpay.customer.exception.SessionIsNotFoundOrExpiredException;
 import com.quickpay.customer.repository.CustomerRepository;
 import com.quickpay.customer.repository.SessionRepository;
 import jakarta.validation.Valid;
@@ -20,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.beans.Encoder;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -53,19 +56,40 @@ public class AuthService {
             throw new PasswordNotValidException();
         }
 
+        String token = generateToken();
+        String tokenHash = tokenHasher(token);
+
+        Session session = new Session(UUID.randomUUID().toString(), tokenHash, customer.getCif(), null, Timestamp.valueOf(LocalDateTime.now().plusMinutes(ttl)));
+        sessionRepository.save(session);
+        return new LoginResponse(token);
+    }
+
+    private String generateToken(){
         byte[] buf = new byte[32];
         SecureRandom token = new SecureRandom();
-            token.nextBytes(buf); // generate 32 random bytes
-            String stringToken = Base64.getUrlEncoder().withoutPadding().encodeToString(buf); // withoutPadding is to remove any unpredictable symbols like /\* ... in the token
-        try{
-            byte[] bytesToken = MessageDigest.getInstance("SHA-256").digest(buf); // the hashing
-        String hashToken = Base64.getUrlEncoder().withoutPadding().encodeToString(bytesToken);
-        Session session = new Session(UUID.randomUUID().toString(), hashToken, customer.getCif(), null, Timestamp.valueOf(LocalDateTime.now().plusMinutes(ttl)));
-        sessionRepository.save(session);
-        } catch (NoSuchAlgorithmException e){
+        token.nextBytes(buf); // generate 32 random bytes
+        String stringToken = Base64.getUrlEncoder().withoutPadding().encodeToString(buf);
+        return stringToken;
+    }
+
+    private String tokenHasher(String input) {
+        try {
+            byte[] bytesToken = MessageDigest.getInstance("SHA-256").digest(input.getBytes(StandardCharsets.UTF_8)); // the hashing
+            String hashToken = Base64.getUrlEncoder().withoutPadding().encodeToString(bytesToken);
+            return hashToken;
+        }  catch (NoSuchAlgorithmException e){
             logger.error("error while generating token in login method");
+            throw new HashingTokenException();
         }
-        return new LoginResponse(stringToken);
+
+    }
+
+    public String validateSession(String token){
+        String hash = tokenHasher(token);
+        Session session = sessionRepository.findByTokenHashAndExpiresAtAfter(hash,Timestamp.valueOf(LocalDateTime.now()))
+                .orElseThrow(SessionIsNotFoundOrExpiredException::new);
+
+        return session.getCif();
     }
 
 }

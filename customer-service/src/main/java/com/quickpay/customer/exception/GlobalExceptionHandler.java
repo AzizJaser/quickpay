@@ -73,4 +73,34 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(HashingTokenException.class)
+    public ProblemDetail handlerHashingTokenException(HashingTokenException e){
+        logger.warn("Error while generating hashed token");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+        problem.setTitle("Cannot generate session");
+        return problem;
+    }
+
+    @ExceptionHandler(SessionIsNotFoundOrExpiredException.class)
+    public ProblemDetail handlerSessionIsNotFoundOrExpiredException(SessionIsNotFoundOrExpiredException e){
+        logger.warn("session is not found or expired");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("session not found or expired");
+        return problem;
+    }
+
+    @ExceptionHandler(MissingSessionException.class)
+    public ProblemDetail handlerMissingSessionException(MissingSessionException e){
+        logger.warn("Unauthorize attempt, request without a session");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("no auth header");
+        return problem;
+    }
+
 }
