@@ -11,6 +11,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @RestController
 @RequestMapping("/v1/wallets")
 @AllArgsConstructor
@@ -47,6 +50,13 @@ public class WalletController {
     public ResponseEntity<WalletResponse> closeWallet(@PathVariable String walletNumber){
         Wallet wallet = walletService.closeWallet(walletNumber);
         return ResponseEntity.ok(fromWallet(wallet));
+    }
+
+    @GetMapping("/{cif}/all")
+    public ResponseEntity<List<WalletResponse>> fetchWalletsByCif(@PathVariable("cif") String cif){
+        List<Wallet> wallets = walletService.getAllWalletsByCif(cif);
+        List<WalletResponse> responses = wallets.stream().map(this::fromWallet).toList();
+        return ResponseEntity.ok(responses);
     }
 
 

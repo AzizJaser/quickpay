@@ -45,12 +45,17 @@ logging:
   file:
     name: logs/customer-service.log
   pattern:
-    level: "%5p [%X{correlationId:-}]"
+    level: "%5p [%X{correlationId:-} %X{cif:-}]"
   level:
     org.hibernate.SQL: warn
   logback:
     rollingpolicy:
       max-history: 60
+
+
+quickpay:
+  wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080}
+  wallet-time-out-seconds: ${WALLET_TIME_OUT_SECONDS:2}
 
 customer:
   events-exchange: ${CUSTOMER_EVENTS_EXCHANGE:quickpay.events}

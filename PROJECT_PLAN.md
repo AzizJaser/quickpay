@@ -5,8 +5,10 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-16 (rev 18 — customer service #4: increment 1 COMPLETE, replicating.
-> Auth DESIGNED (ADR-0006), not yet built. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
+> Last updated: **2026-09-19 (rev 19 — customer service #4: increments 1–4 COMPLETE. Sessions,
+> login, session filter and the BFF's first wallet call all built and measured. Auth is now
+> half BUILT, half designed: the human is authenticated, the wallet-side ownership check
+> (increment 5) is not started. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
 >
 > **State in one paragraph.** `main` holds the finished build — wallet, bill and notification
 > services, three databases, RabbitMQ, three simulators, six ADRs, 14 sabotage records and two
@@ -22,7 +24,9 @@
 > **zero UNROUTABLE lines** while every outbox row read `sent_at = t`.
 > **`sent_at` means handed to the broker, nothing more.**
 >
-> **Next: sessions and login (increment 2)**, then the wallet-side ownership check. Sessions are
+> **Next: the wallet-side ownership check (increment 5)** — ⚠️ **blocked on a data problem, see
+> below.** Increments 2–4 landed: sessions, login, the session filter, and the BFF's first
+> proxied wallet call. Sessions are
 stateful by decision — a JWT cannot be revoked, and a `BLOCKED` customer holding a live token
 is not acceptable on a money platform. **Blocking or closing deletes the sessions**, in the
 same transaction; see ADR-0006. That makes revocation the *only* enforcement point for a
@@ -82,13 +86,85 @@ S10 arm A, permanently, for that customer. **Recovery is reconciliation, not ret
 
 | ✅ done | ⬜ remaining |
 |---|---|
-| module, `customer-db` 5435, `application.yml` | **sessions + login** (increment 2) |
-| **V1 · V2 · V3** applied | sessions + login (increment 2) |
-| entity · repository · service · controller · handlers | session validation (increment 3) |
-| `CorrelationIdFilter` | BFF proxying a wallet call (increment 4) |
-| **the relay** + `QueueCallBack` + exchange config | wallet-side ownership check (increment 5) |
-| **second queue** + binding + **the consumer** | cif threaded BFF → bill → wallet (increment 6) |
-| ✅ **replication verified end to end** | a dead-letter queue, if dropping ever proves too costly |
+| module, `customer-db` 5435, `application.yml` | ⚠️ **wallet-side ownership check** (increment 5) — *blocked, see below* |
+| **V1 · V2 · V3 · V4** applied | cif threaded BFF → bill → wallet (increment 6) |
+| entity · repository · service · controller · handlers | MockMvc tests for the BFF (step 6, not yet written) |
+| `CorrelationIdFilter` · **`SessionFilter`** | block/close endpoints + session revocation |
+| **the relay** + `QueueCallBack` + exchange config | a dead-letter queue, if dropping ever proves too costly |
+| **second queue** + binding + **the consumer** | |
+| ✅ **replication verified end to end** | |
+| ✅ **inc. 2 — sessions + login** (`V4`, SHA-256 token, BCrypt password) | |
+| ✅ **inc. 3 — session validation filter**, deny-by-default | |
+| ✅ **inc. 4 — BFF proxies a wallet call**, measured end to end | |
+
+---
+
+**✅ INCREMENTS 2–4 COMPLETE — 19 Sep. The customer is authenticated; the wallet is not yet.**
+
+```
+POST /v1/login   ->  BCrypt verify  ->  random 32-byte token, SHA-256 hashed into `sessions`
+                 ->  client holds the token, the DB holds only its hash
+GET /v1/me/wallets  ->  SessionFilter validates, sets request ATTRIBUTE "cif"
+                    ->  MeController reads @RequestAttribute (never a header, never a param)
+                    ->  WalletClient  ->  GET /v1/wallets/{cif}/all  ->  list
+```
+
+**Data-ownership answer for reads (decided 19 Sep):** the BFF never names a wallet number.
+It asks the wallet *"which wallets belong to this cif?"*, because the wallet owns that
+relationship. The alternative — the client supplying a wallet number the BFF forwards —
+was rejected: it asks the client to remember something the wallet already knows, then trusts
+the answer.
+
+⚠️ **The defence is structural, not a check.** A forged `cif` header or query parameter is not
+*rejected* — it is never read. Measured: with a valid session, adding `cif: 0000000008` or
+`?cif=5100000001` returns the caller's **own** wallet, byte-identical to the clean request,
+while that cif genuinely owns five wallets holding real balances. **There is no branch to
+bypass**, which is stronger than a 403. Three earlier attempts at that one parameter each
+reintroduced the hole (unannotated → query param; Spring *Messaging* `@Header` → query param;
+`@RequestHeader` → client-supplied header). Reading the code did not catch any of them; the
+forged-cif request did.
+
+**Measured failure behaviour — same status to the customer, different evidence for you:**
+
+| wallet state | status | latency | `Caused by:` |
+|---|---|---|---|
+| stopped | **503** | **35 ms** | `java.net.ConnectException: Connection refused` |
+| hung | **503** | **2,019 ms** | `java.net.SocketTimeoutException: Read timed out` |
+
+A **58× cost difference** behind an identical response. That only works because the exception
+carries its cause (`super(message, cause)`) and the log line passes the throwable with **no
+`{}` placeholder** — SLF4J treats a trailing argument as a throwable only when placeholders
+are fewer than arguments. Both were got wrong repeatedly; both are load-bearing.
+
+⚠️ **Predicted inner exception was wrong.** Reasoning from the classpath said
+`HttpTimeoutException`; the measurement says `SocketTimeoutException`. **Never branch on the
+inner exception type** — it depends on which request factory Spring selected. Log the chain.
+
+`cif` now rides in **MDC** (set in `SessionFilter`, removed in a `finally`), so every log line
+in an authenticated request carries it without any method taking it as a parameter. Built for
+increment 4's error messages; it immediately paid for itself — the by-cif call has no wallet
+number to report, and doesn't need one.
+
+**🔴 BLOCKER for increment 5 — the two services' identifiers are disjoint.** Every wallet in
+`wallet-db` has a cif starting `5`, `6`, `7` or `8` (legacy test rows and the Phase 8 pool);
+`0000000000` is the shared internal cif. Customer-service issues cifs matching `^0[0-9]{9}$`
+from a sequence. **No existing wallet can belong to any customer-service customer** — verified
+19 Sep, zero matches. The ownership check would reject all ~231 of them. Decide before
+building increment 5: backfill customers, migrate the wallet cifs, or accept the old wallets
+as orphaned test data and say so in writing.
+
+✅ **The internal-wallet filter is proven**, not assumed: `GET /v1/wallets/0000000000/all`
+returns `[]` because the query carries `is_internal = false`. `0000000000` *satisfies*
+`ck_cif_format`, so without that clause a customer ever issued it would have been handed the
+TopUp float. This is the read-side half of ADR-0006's open item on internal wallets; the
+write-side half is still open.
+
+⚠️ **The BFF re-exposes the wallet's DTO verbatim.** `WalletResponse` mirrors the wallet's
+shape field-for-field with no translation layer, so a new field in wallet-service reaches a
+customer's phone automatically rather than by choice. Acceptable while the shapes match;
+it stops being acceptable the first time the wallet adds something internal.
+
+---
 
 **The schema enforces the customer lifecycle in constraints, not code** (V1–V3):
 `ck_cif_format` (`^0[0-9]{9}$`, issued from a capped sequence) · `ck_national_id_format`
@@ -1884,6 +1960,24 @@ manual run proved the sequential case only — the concurrent race is test #7's 
 - [ ] *(optional, later)* Wiremock tests for the two HTTP clients to close this gap
 
 ### Small deferred refinements
+- [ ] ⚠️ **`ledger.debited_wallet_number` and `credited_wallet_number` are unindexed.**
+  Found 19 Sep while adding `idx_wallet_cif` (V20) — that index is the *only* one in the
+  whole wallet schema besides primary keys and the `idempotency_key` unique. So
+  `findDriftedWallets` runs two correlated subqueries against those columns, per wallet row,
+  over ~970,000 ledger rows. **That is the golden-rule check every sabotage scenario ends
+  with**, and it gets slower every run. Measure it before indexing — the number is the point.
+- [ ] `V20` used plain `CREATE INDEX`, correct at this table size. Noted for the future:
+  the production form is `CREATE INDEX CONCURRENTLY`, which **cannot run inside a
+  transaction** — Flyway wraps migrations in one, so it needs
+  `-- flyway:executeInTransaction=false` and gives up atomicity (a failed build leaves an
+  invalid index to drop by hand).
+- [ ] `WalletNotFoundException` in customer-service and the commented-out
+  `getWalletByWalletNumber` in its `WalletClient` are both dead — **kept deliberately**
+  (decided 19 Sep). The commented block references constructors that no longer exist, so
+  it is a sketch, not a spare part.
+- [ ] `@RequestAttribute` is required by default, so a missing cif raises a binding failure
+  that surfaces as **400** — the wrong signal, since it would mean the filter did not run
+  (our bug, not the caller's). Unreachable today because `publicURLs` denies by default.
 - [ ] Bill NOT_FOUND age policy: pending > 24h → reverse + raise ops ticket (not built;
   an unused `LocalDateTime` import in `EODReconciliationJob` marks the spot)
 - [ ] "OPS ticket" is currently just a log line

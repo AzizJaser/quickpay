@@ -7,6 +7,7 @@ import com.quickpay.wallet.domain.NotificationEvent;
 import com.quickpay.wallet.domain.Wallet;
 import com.quickpay.wallet.dto.event.MoneyMovedPayload;
 import com.quickpay.wallet.dto.response.HoldResponse;
+import com.quickpay.wallet.dto.response.WalletResponse;
 import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.enums.WalletStatus;
 import com.quickpay.wallet.exception.*;
@@ -24,6 +25,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -189,6 +192,10 @@ public class WalletService {
     public Wallet fetchWallet(String wallet_number){
         return walletRepository.findByWalletNumber(wallet_number)
                 .orElseThrow(() -> new WalletNotFoundException("Wallet was not found with id = "+wallet_number,wallet_number));
+    }
+
+    public List<Wallet> getAllWalletsByCif(String cif){
+        return walletRepository.findWalletsByCif(cif);
     }
 
 

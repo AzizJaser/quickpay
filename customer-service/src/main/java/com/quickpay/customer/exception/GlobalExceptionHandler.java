@@ -103,4 +103,34 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(WalletNotFoundException.class)
+    public ProblemDetail handlerWalletNotFoundException(WalletNotFoundException e){
+        logger.warn("wallet {} not found", e.getWalletNumber());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND, e.getMessage());
+        problem.setTitle("wallet is not found");
+        return problem;
+    }
+
+    @ExceptionHandler(WalletAccessDeniedException.class)
+    public ProblemDetail handlerWalletAccessDeniedException(WalletAccessDeniedException e){
+        logger.warn("access denied for wallet");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.FORBIDDEN, e.getMessage());
+        problem.setTitle("access denied");
+        return problem;
+    }
+
+    @ExceptionHandler(WalletUnavailableException.class)
+    public ProblemDetail handlerWalletUnavailableException(WalletUnavailableException e){
+        logger.warn("wallet unavailable", e);
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE, e.getMessage());
+        problem.setTitle("wallet service unavailable");
+        return problem;
+    }
+
 }

@@ -7,6 +7,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.MDC;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -18,6 +19,7 @@ import java.io.IOException;
 @RequiredArgsConstructor
 public class SessionFilter extends OncePerRequestFilter {
 
+    private static final String MDC_CIF_KEY = "cif";
 
     private final AuthService authService;
     @Override
@@ -35,14 +37,21 @@ public class SessionFilter extends OncePerRequestFilter {
             return;
         }
         String token = header.substring(7); // after "Bearer " -> 7 spaces
+        String cif;
         try {
-            String cif = authService.validateSession(token);
+            cif = authService.validateSession(token);
             request.setAttribute("cif", cif);
-            doFilter(request,response,filterChain);
         } catch (Exception e) {
             logger.warn(e.getMessage());
             response.setStatus(401);
             return;
+        }
+        request.setAttribute("cif",cif);
+        MDC.put(MDC_CIF_KEY,cif);
+        try {
+            doFilter(request,response,filterChain);
+        } finally {
+            MDC.remove(MDC_CIF_KEY);
         }
     }
 
