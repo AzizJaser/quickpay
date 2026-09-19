@@ -5,8 +5,9 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-19 (rev 20 — customer service #4: increments 1–4 COMPLETE + logout.
-> Revocation PROVEN. Phase 9 security pass: threat model started, parked. Sessions,
+> Last updated: **2026-09-19 (rev 21 — customer service #4: increments 1–4 COMPLETE + logout.
+> Revocation PROVEN. cif backfill applied — **increment 5 is UNBLOCKED**.
+> Phase 9 security pass: threat model started, parked. Sessions,
 > login, session filter and the BFF's first wallet call all built and measured. Auth is now
 > half BUILT, half designed: the human is authenticated, the wallet-side ownership check
 > (increment 5) is not started. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
@@ -25,9 +26,10 @@
 > **zero UNROUTABLE lines** while every outbox row read `sent_at = t`.
 > **`sent_at` means handed to the broker, nothing more.**
 >
-> **Next: the wallet-side ownership check (increment 5)** — ⚠️ **blocked on a data problem, see
-> below.** Increments 2–4 landed: sessions, login, the session filter, and the BFF's first
-> proxied wallet call. Sessions are
+> **Next: the wallet-side ownership check (increment 5)** — ✅ **unblocked 19 Sep**; the cif
+> backfill gave 31 pre-auth wallets real owners (`docs/migrations/`). Increments 2–4 landed:
+> sessions, login, the session filter, and the BFF's first proxied wallet call, plus logout
+> with revocation proven. Sessions are
 stateful by decision — a JWT cannot be revoked, and a `BLOCKED` customer holding a live token
 is not acceptable on a money platform. **Blocking or closing deletes the sessions**, in the
 same transaction; see ADR-0006. That makes revocation the *only* enforcement point for a
@@ -87,7 +89,7 @@ S10 arm A, permanently, for that customer. **Recovery is reconciliation, not ret
 
 | ✅ done | ⬜ remaining |
 |---|---|
-| module, `customer-db` 5435, `application.yml` | ⚠️ **wallet-side ownership check** (increment 5) — *blocked, see below* |
+| module, `customer-db` 5435, `application.yml` | **wallet-side ownership check** (increment 5) — ✅ unblocked 19 Sep |
 | **V1 · V2 · V3 · V4** applied | cif threaded BFF → bill → wallet (increment 6) |
 | entity · repository · service · controller · handlers | MockMvc tests for the BFF (step 6, not yet written) |
 | `CorrelationIdFilter` · **`SessionFilter`** | block/close endpoints + session revocation |
@@ -172,13 +174,36 @@ Two items now have a *named trigger* rather than vague intent:
 - **expired-session pruning** — dead rows are filtered out of every query and never removed.
   Same family as the outbox pruning item.
 
-**🔴 BLOCKER for increment 5 — the two services' identifiers are disjoint.** Every wallet in
-`wallet-db` has a cif starting `5`, `6`, `7` or `8` (legacy test rows and the Phase 8 pool);
-`0000000000` is the shared internal cif. Customer-service issues cifs matching `^0[0-9]{9}$`
-from a sequence. **No existing wallet can belong to any customer-service customer** — verified
-19 Sep, zero matches. The ownership check would reject all ~231 of them. Decide before
-building increment 5: backfill customers, migrate the wallet cifs, or accept the old wallets
-as orphaned test data and say so in writing.
+**✅ INCREMENT 5 IS UNBLOCKED — cif backfill applied 19 Sep.**
+📄 **`docs/migrations/cif-backfill-2026-09-19.md`** + the 23-row mapping beside it.
+
+The blocker was real: every wallet cif started `5`–`9`, customer-service issues `^0[0-9]{9}$`,
+and **1 of 232 wallets conformed**. A correctly built ownership check would have rejected all
+231 — not because the check was wrong, but because none of those wallets had an owner that
+could exist.
+
+⚠️ **The obvious fix was impossible.** You cannot create a customer with cif `5100000001`:
+`ck_cif_format` rejects it at INSERT, and registration never accepts a cif anyway (it comes
+from `seq_customers_cif`). That format rule is load-bearing — it is what keeps cifs and
+national IDs disjoint. So the migration ran the **other** way: register a customer, take the
+issued cif, rewrite the wallet.
+
+**What made it cheap: `cif` appears in exactly one table.** The ledger keys on
+`wallet_number`, so this was a 31-row `UPDATE` with zero ledger impact — including
+`5100000001`, which carries 40,524 ledger rows that were never touched.
+
+Predicted and confirmed: 23 rows `0000000012`–`0000000034` · `sum(balance) = 0` · **0 drift**.
+`231 → 200` non-conforming; `1 → 32` owned. **The golden rule held across an ownership
+rewrite on 31 live wallets.** Verified end to end through the BFF — four migrated customers
+logged in and saw exactly their own wallets at their exact pre-migration balances.
+
+⚠️ **200 load-pool wallets left non-conforming, deliberately** — `seed.sh` regenerates them,
+so fabricating 200 customers for wallets that get discarded each run buys nothing. They are
+unreachable through the BFF by construction, which is correct: they have no owner.
+
+⚠️ **The cause is not fixed.** `CreateWalletRequest` validates length but **not format**, so
+wallet 232 can be created non-conforming tomorrow. The `^0[0-9]{9}$` rule belongs there too.
+When it lands, `seed.sh` must register customers rather than inventing `88…` cifs.
 
 ✅ **The internal-wallet filter is proven**, not assumed: `GET /v1/wallets/0000000000/all`
 returns `[]` because the query carries `is_internal = false`. `0000000000` *satisfies*
