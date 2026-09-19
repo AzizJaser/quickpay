@@ -1,5 +1,6 @@
 package com.quickpay.customer.filter;
 
+import com.quickpay.customer.domain.Session;
 import com.quickpay.customer.exception.MissingSessionException;
 import com.quickpay.customer.service.AuthService;
 import jakarta.servlet.FilterChain;
@@ -20,6 +21,7 @@ import java.io.IOException;
 public class SessionFilter extends OncePerRequestFilter {
 
     private static final String MDC_CIF_KEY = "cif";
+//    private static final String MDC_SESSION_ID = "sessionId" no need for now
 
     private final AuthService authService;
     @Override
@@ -37,17 +39,19 @@ public class SessionFilter extends OncePerRequestFilter {
             return;
         }
         String token = header.substring(7); // after "Bearer " -> 7 spaces
-        String cif;
+        Session session;
         try {
-            cif = authService.validateSession(token);
-            request.setAttribute("cif", cif);
+            session = authService.validateSession(token);
+//            request.setAttribute("cif", session.getCif());
+//            request.setAttribute("sessionId", session.getSessionId());
         } catch (Exception e) {
             logger.warn(e.getMessage());
             response.setStatus(401);
             return;
         }
-        request.setAttribute("cif",cif);
-        MDC.put(MDC_CIF_KEY,cif);
+        request.setAttribute("cif",session.getCif());
+        request.setAttribute("sessionId", session.getSessionId());
+        MDC.put(MDC_CIF_KEY,session.getCif());
         try {
             doFilter(request,response,filterChain);
         } finally {

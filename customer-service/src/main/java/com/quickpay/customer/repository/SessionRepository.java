@@ -15,4 +15,6 @@ public interface SessionRepository extends JpaRepository<Session,String> {
     void deleteByCif(String cif);
 
     Optional<Session> findByTokenHashAndExpiresAtAfter(String tokenHash, Timestamp timestamp);
+
+    void deleteBySessionId(String sessionId);
 }

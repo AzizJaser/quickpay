@@ -64,6 +64,11 @@ public class AuthService {
         return new LoginResponse(token);
     }
 
+    @Transactional
+    public void logout(String sessionId){
+        sessionRepository.deleteBySessionId(sessionId);
+    }
+
     private String generateToken(){
         byte[] buf = new byte[32];
         SecureRandom token = new SecureRandom();
@@ -84,12 +89,12 @@ public class AuthService {
 
     }
 
-    public String validateSession(String token){
+    public Session validateSession(String token){
         String hash = tokenHasher(token);
         Session session = sessionRepository.findByTokenHashAndExpiresAtAfter(hash,Timestamp.valueOf(LocalDateTime.now()))
                 .orElseThrow(SessionIsNotFoundOrExpiredException::new);
 
-        return session.getCif();
+        return session;
     }
 
 }

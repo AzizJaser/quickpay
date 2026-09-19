@@ -5,7 +5,8 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-19 (rev 19 — customer service #4: increments 1–4 COMPLETE. Sessions,
+> Last updated: **2026-09-19 (rev 20 — customer service #4: increments 1–4 COMPLETE + logout.
+> Revocation PROVEN. Phase 9 security pass: threat model started, parked. Sessions,
 > login, session filter and the BFF's first wallet call all built and measured. Auth is now
 > half BUILT, half designed: the human is authenticated, the wallet-side ownership check
 > (increment 5) is not started. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
@@ -144,6 +145,32 @@ inner exception type** — it depends on which request factory Spring selected. 
 in an authenticated request carries it without any method taking it as a parameter. Built for
 increment 4's error messages; it immediately paid for itself — the by-cif call has no wallet
 number to report, and doesn't need one.
+
+**✅ LOGOUT — built 19 Sep, and revocation is now PROVEN rather than assumed.**
+`validateSession` returns the `Session` (not just the cif), the filter publishes `sessionId`
+as a second request attribute, and `POST /v1/logout` deletes that one row. Measured:
+
+| call | result |
+|---|---|
+| `POST /v1/logout` | **204** |
+| `GET /v1/me/wallets`, same token | **401** |
+| `POST /v1/logout` again | **401 — from the filter.** The controller never runs |
+
+**One round trip to dead, no cache to wait out.** This is the mechanism ADR-0006 rests its
+entire block-enforcement argument on; until today it had never been executed.
+
+⚠️ **The row count is the real finding.** Sessions for that customer went **5 → 4**. Logout
+removed exactly one — correct — which makes visible that **four other live sessions** remain,
+accumulated from a single day of testing, each good for its full 60-minute TTL. Nothing prunes
+them and nothing can reach them. **So the blast radius of a stolen token is not one session,
+it is every session that customer has opened inside the TTL window** — and logging out would
+end the wrong one. That answers a question A01 was going to ask, with a measurement.
+
+Two items now have a *named trigger* rather than vague intent:
+- **"log out everywhere"** — `deleteByCif` already exists; needs `@Transactional` and an
+  endpoint. It is the control that matters when a customer suspects theft.
+- **expired-session pruning** — dead rows are filtered out of every query and never removed.
+  Same family as the outbox pruning item.
 
 **🔴 BLOCKER for increment 5 — the two services' identifiers are disjoint.** Every wallet in
 `wallet-db` has a cif starting `5`, `6`, `7` or `8` (legacy test rows and the Phase 8 pool);
@@ -1960,6 +1987,21 @@ manual run proved the sequential case only — the concurrent race is test #7's 
 - [ ] *(optional, later)* Wiremock tests for the two HTTP clients to close this gap
 
 ### Small deferred refinements
+- [ ] **"Log out everywhere"** — `deleteByCif` exists and is unused; needs `@Transactional`
+  (derived deletes are **not** transactional by default — `deleteById` is, which is the
+  entire difference between the two) plus an endpoint. **Earned by measurement 19 Sep:**
+  one customer held 5 concurrent sessions after a day of testing; logout kills one.
+- [ ] **Expired sessions are never pruned.** Filtered out by
+  `findByTokenHashAndExpiresAtAfter`, so they are harmless — but the table only grows.
+- [ ] **🔒 Phase 9 (security pass) — Step 0 STARTED, parked 19 Sep.**
+  `docs/security/THREAT_MODEL.md` holds the measured inventory (§1) and 15 open questions
+  (§2–§6) awaiting the human's answers, plus **six reviewer challenges to the plan itself**
+  (§7). Headline from the inventory: **of 26 HTTP endpoints, one service authenticates a
+  human and one endpoint verifies a machine**; ten money endpoints have no notion of a
+  caller. Also closed before being asked: **actuator is not a dependency anywhere**, and the
+  entire SQL surface is **three native queries**, none interpolating input.
+  ⚠️ **A01 is gated on block/close, not on increment 5** — "time-to-dead after `BLOCKED`"
+  cannot be measured while nothing can set that status. Hard stop for Phase 9: **24 Oct**.
 - [ ] ⚠️ **`ledger.debited_wallet_number` and `credited_wallet_number` are unindexed.**
   Found 19 Sep while adding `idx_wallet_cif` (V20) — that index is the *only* one in the
   whole wallet schema besides primary keys and the `idempotency_key` unique. So
