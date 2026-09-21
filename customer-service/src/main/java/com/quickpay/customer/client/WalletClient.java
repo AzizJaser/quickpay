@@ -1,18 +1,19 @@
 package com.quickpay.customer.client;
 
+import com.quickpay.customer.dto.request.OutwardTransactionRequest;
+import com.quickpay.customer.dto.response.TransferResponse;
 import com.quickpay.customer.dto.response.WalletResponse;
 import com.quickpay.customer.exception.WalletAccessDeniedException;
-import com.quickpay.customer.exception.WalletNotFoundException;
+import com.quickpay.customer.exception.WalletBalanceIsNotZeroException;
 import com.quickpay.customer.exception.WalletUnavailableException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 
-import java.lang.reflect.Type;
 import java.util.List;
 
 @Component
@@ -62,5 +63,30 @@ public class WalletClient {
         } catch (ResourceAccessException e) {
             throw new WalletUnavailableException(e);
         }
+    }
+
+    public TransferResponse outwardTransfer(String debited, Long amount, String idempotencyKey){
+        return walletRestClient
+                .post()
+                .uri("/v1/transfer/withdraw")
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new OutwardTransactionRequest(debited,amount))
+                .retrieve()
+                .onStatus(status -> status.value()==409, ((request, response) -> {
+                    return;
+                }))
+                .body(TransferResponse.class);
+    }
+
+    public WalletResponse closeWalletByWalletNumber(String walletNumber){
+        return walletRestClient
+                .delete()
+                .uri("/v1/wallets/close/{walletNumber}",walletNumber)
+                .retrieve()
+                .onStatus(status -> status.value() == 400, (request, response) -> {
+                    throw new WalletBalanceIsNotZeroException(walletNumber);
+                })
+                .body(WalletResponse.class);
     }
 }

@@ -185,6 +185,9 @@ public class WalletService {
     public Wallet closeWallet(String wallet_number){
         Wallet wallet = walletRepository.findByWalletNumber(wallet_number)
                 .orElseThrow(() -> new WalletNotFoundException("Wallet was not found with id = "+wallet_number,wallet_number));
+        if(wallet.getBalance() != 0){
+            throw new WalletBalanceIsNotZeroException(wallet_number);
+        }
         wallet.setStatus(WalletStatus.Closed);
         return walletRepository.save(wallet);
     }

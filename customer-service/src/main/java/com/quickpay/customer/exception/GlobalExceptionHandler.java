@@ -133,4 +133,24 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(WalletBalanceIsNotZeroException.class)
+    public ProblemDetail handlerWalletBalanceIsNotZeroException(WalletBalanceIsNotZeroException e){
+        logger.warn("wallet with number "+e.getWalletNumber()+" can not be close because balance is not zero");
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("wallet cannot be closed");
+        return problem;
+    }
+
+    @ExceptionHandler(SuspendedWalletException.class)
+    public ProblemDetail handlerSuspendedWalletException(SuspendedWalletException e){
+        logger.warn("wallet with number {} belong to cif {} can not be close because wallet is suspened",e.getWalletNumber(),e.getCif());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, e.getMessage());
+        problem.setTitle("wallet cannot be closed");
+        return problem;
+    }
+
 }

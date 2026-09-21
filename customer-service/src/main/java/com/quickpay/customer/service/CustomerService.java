@@ -2,17 +2,21 @@ package com.quickpay.customer.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.quickpay.customer.config.CustomPasswordEncoder;
+import com.quickpay.customer.client.WalletClient;
 import com.quickpay.customer.domain.Customer;
 import com.quickpay.customer.domain.CustomerOutboxEvent;
+import com.quickpay.customer.dto.event.CustomerClosureEvent;
 import com.quickpay.customer.dto.event.CustomerRegistrationEvent;
 import com.quickpay.customer.dto.request.CustomerActivateRequest;
 import com.quickpay.customer.dto.request.CustomerRequest;
 import com.quickpay.customer.dto.response.CustomerResponse;
+import com.quickpay.customer.dto.response.WalletResponse;
 import com.quickpay.customer.enums.CustomerStatus;
+import com.quickpay.customer.enums.WalletStatus;
 import com.quickpay.customer.exception.*;
 import com.quickpay.customer.repository.CustomerRepository;
 import com.quickpay.customer.repository.OutboxEventRepository;
+import com.quickpay.customer.repository.SessionRepository;
 import lombok.AllArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,9 +27,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 
 import java.sql.Timestamp;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.Optional;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -34,11 +37,15 @@ public class CustomerService {
 
     private final CustomerRepository customerRepository;
 
+    private final SessionRepository sessionRepository;
+
     private final OutboxEventRepository outboxEventRepository;
 
     private final BCryptPasswordEncoder passwordEncoder;
 
     private final ObjectMapper objectMapper;
+
+    private final WalletClient walletClient;
 
     private static final Logger logger = LoggerFactory.getLogger(CustomerService.class);
 
@@ -121,4 +128,50 @@ public class CustomerService {
 
         return new CustomerResponse(customer.getCif(), customer.getCustomerName(), customer.getStatus().toString());
     }
+
+    @Transactional
+    public void closeAccount(String cif){
+        Customer customer = customerRepository.findByCif(cif).orElseThrow(()->new CustomerNotFoundException());
+
+        List<WalletResponse> wallets = walletClient.getWalletsByCif(cif);
+
+        for(WalletResponse wallet : wallets){
+            if(wallet.status().equals(WalletStatus.Suspended.toString())){
+                throw new SuspendedWalletException(cif,wallet.walletNumber());
+            }
+        }
+
+        for(WalletResponse wallet : wallets){
+            if (wallet.status().equals(WalletStatus.Active.toString()) || wallet.status().equals(WalletStatus.Pending.toString())){
+                if(wallet.balance() == 0){
+                    walletClient.closeWalletByWalletNumber(wallet.walletNumber());
+                } else {
+                    String idempotencyKey = "s" + UUID.randomUUID().toString().replace("-","");
+                    walletClient.outwardTransfer(wallet.walletNumber(), wallet.balance(),idempotencyKey);
+                    walletClient.closeWalletByWalletNumber(wallet.walletNumber());
+                }
+            }
+        } // after this loop, balances should be zero and wallets closed
+
+        customer.setStatus(CustomerStatus.CLOSED);
+        customerRepository.save(customer);
+        sessionRepository.deleteByCif(cif);
+
+        CustomerClosureEvent event = new CustomerClosureEvent(cif, customer.getCustomerName(), customer.getPhoneNumber(),customer.getEmail());
+        String payload ="";
+        try {
+            payload = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException e){
+            logger.error("error serializing customer event to outbox, {}",e.getMessage());
+            throw new ParsingCustomerEventException(cif);
+
+        }
+        UUID eventId = UUID.randomUUID();
+        CustomerOutboxEvent outboxEvent = new CustomerOutboxEvent(eventId,
+                "customer.closed",null,payload, MDC.get("correlationId"),null);
+
+        outboxEventRepository.save(outboxEvent);
+        logger.info("customer closed with cif {} and the event is written with id {} successfully",cif,eventId);
+    }
+
 }

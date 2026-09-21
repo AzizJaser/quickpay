@@ -183,4 +183,17 @@ public class GlobalExceptionHandler {
         problem.setProperty("dischargeType", e.getDischargerType());
         return problem;
     }
+
+    @ExceptionHandler(WalletBalanceIsNotZeroException.class)
+    public ProblemDetail handlerWalletBalanceIsNotZeroException(WalletBalanceIsNotZeroException e){
+        logger.warn("wallet with number {} can not be close because balance is not zero",e.getWalletNumber());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("wallet cannot be close, balance is not zero ");
+        problem.setDetail(e.getMessage());
+//        problem.setProperty("holdEntryId",e.getHoldEntryId());
+//        problem.setProperty("dischargedByEntryId", e.getDischargedByEntryId());
+//        problem.setProperty("dischargeType", e.getDischargerType());
+        return problem;
+    }
 }

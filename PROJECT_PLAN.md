@@ -5,7 +5,7 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-19 (rev 21 — customer service #4: increments 1–4 COMPLETE + logout.
+> Last updated: **2026-09-21 (rev 22 — customer service #4: increments 1–4 COMPLETE + logout + account closure.
 > Revocation PROVEN. cif backfill applied — **increment 5 is UNBLOCKED**.
 > Phase 9 security pass: threat model started, parked. Sessions,
 > login, session filter and the BFF's first wallet call all built and measured. Auth is now
@@ -210,6 +210,54 @@ Two items now have a *named trigger* rather than vague intent:
   endpoint. It is the control that matters when a customer suspects theft.
 - **expired-session pruning** — dead rows are filtered out of every query and never removed.
   Same family as the outbox pruning item.
+
+**✅ ACCOUNT CLOSURE — built 21 Sep. `DELETE /v1/me/close`, 5 of 6 predictions correct.**
+
+```
+suspended wallet anywhere?  ->  409, nothing touched
+close each Active/Pending wallet (sweeping any balance to Outward first)
+[one transaction] status=CLOSED · sessions deleted · customer.closed to outbox
+```
+
+**BLOCK was deliberately NOT built.** Close and block are different actors: close is the
+customer acting on themselves (cif from the session, unforgeable); block is the bank acting on
+someone else — and **this system has no admin actor**. An open block endpoint would let anyone
+block anyone, which is worse than the gap it closes. Block waits for increment 5's per-service
+secrets and a `customer:block` scope. ⚠️ **Consequence: Phase 9's A01 stays gated**, since it
+measures time-to-dead after `BLOCKED`.
+
+**Suspended wallets block closure entirely, regardless of balance.** A suspension is a hold the
+*bank* placed; a close path that sweeps funds to Outward would be a way to walk money out of a
+freeze. Zero-balance suspended wallets are blocked too — closing is one-way, and a later
+reversal into a Closed wallet strands the money.
+
+| case | measured |
+|---|---|
+| no wallets | 200, CLOSED, sessions 0, outbox written |
+| **Pending** wallet | Closed — *the prediction that missed; see below* |
+| Active + 3,000 | wallet Closed, Outward 60 → **3,060** |
+| 1 of 5 Suspended | **409**, all five untouched, customer still ACTIVE |
+| login afterwards | 403 |
+| golden rule | `sum=0` · 0 drift · 0 duplicate idempotency keys |
+
+⚠️ **The miss, and why it mattered.** The loop filtered on `Active`, so a never-activated wallet
+was skipped — leaving a **Pending wallet owned by a CLOSED customer**. Inert on its own
+(`transfer` demands both sides Active), but `PUT /v1/wallets/activate/{n}` has **no
+authentication and does not check customer status** (ADR-0006: the wallet deliberately does not
+know about customers). So it was a live path back into a closed account. Fixed with an explicit
+`Active || Pending` allowlist — a denylist would silently sweep in any status added later.
+
+**Three bugs caught in review before the run, all silent at compile time:**
+1. `@Transactional` on a **private** method — proxies cannot intercept private methods, so the
+   annotation was ignored. The method was also never called, and self-invocation would have
+   bypassed the proxy anyway: three independent reasons for no transaction.
+2. `String.equals(anEnum)` is **always false** — `WalletResponse.status` is a `String`, so the
+   status filter never matched, the loop body never ran, and the customer would have been marked
+   CLOSED with every wallet still Active and funded. ⚠️ **`==` would not have compiled**; the
+   safer-looking method is the one that let it through.
+3. `anyMatch` with a `throw` inside — it **short-circuits on the first element**, so only wallet
+   #1 was ever examined. Replaced with a plain loop; the verification suspended the **third** of
+   five wallets specifically to prove the difference.
 
 **✅ INCREMENT 5 IS UNBLOCKED — cif backfill applied 19 Sep.**
 📄 **`docs/migrations/cif-backfill-2026-09-19.md`** + the 23-row mapping beside it.
@@ -2049,6 +2097,33 @@ manual run proved the sequential case only — the concurrent race is test #7's 
 - [ ] *(optional, later)* Wiremock tests for the two HTTP clients to close this gap
 
 ### Small deferred refinements
+- [ ] 🔴 **The EOD sweep has no terminal state — a permanently-unresolvable bill retries
+  forever.** Found 20 Sep by *reading* `EODReconciliationJob`, while designing customer
+  close. The sweep selects every `Reserved` bill, calls `billService.resolve`, and on failure
+  does `catch (Exception e) { logger.error(...) }` — **the bill stays `Reserved`**. At
+  `bill.eod-interval-ms:60000` that is **1,440 identical error lines per day, indefinitely**,
+  with no state change, no cap and no escalation.
+  **Customer close is what will trigger it.** Closing a customer closes their wallets;
+  `transfer` rejects a non-`Active` wallet on *either* side; so a hold stranded in Suspense
+  can never be reversed and the sweep can never succeed. ⚠️ **Ops has no signal** — the line
+  is indistinguishable from a transient biller error.
+  **Fix shape:** a bill status meaning *"human required"*, so the sweep stops selecting it and
+  something can count them. Same family as **S10's "budget before counter"** — a retry that
+  cannot succeed is not a retry. *(Accepted for now: recorded 20 Sep rather than fixed,
+  because it is bill-service scope inside a customer-service increment.)*
+- [ ] 🔒 **`/v1/login` is an account-enumeration oracle — for Phase 9 A05.** Found 21 Sep while
+  testing closure. The status code distinguishes live accounts:
+  `existing + ACTIVE + wrong password -> 400` · `CLOSED -> 403` · `nonexistent email -> 403`.
+  Closed and nonexistent are indistinguishable from each other (both take the empty-`Optional`
+  path in `findByEmailAndStatus`) — that part is accidentally safe — but **"is this an active
+  account" separates cleanly**, which is exactly what an attacker enumerates. The 403 also
+  echoes the submitted email back in `detail`.
+- [ ] **Close has no 404 arm** — `closeWalletByWalletNumber` maps 400 to balance-not-zero but
+  nothing to 404, so a wallet that vanished between the list call and the close gives a 500.
+  Unreachable in practice; recorded rather than fixed.
+- [ ] ⚠️ **Test fixture to remember:** wallet `025100000002` (cif `0000000013`) was left
+  **Suspended** by the 21 Sep closure test, so that customer can never close. Correct
+  behaviour, confusing later — unsuspend it or leave this line as the explanation.
 - [ ] **"Log out everywhere"** — `deleteByCif` exists and is unused; needs `@Transactional`
   (derived deletes are **not** transactional by default — `deleteById` is, which is the
   entire difference between the two) plus an endpoint. **Earned by measurement 19 Sep:**

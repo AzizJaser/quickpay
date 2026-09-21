@@ -2,6 +2,7 @@ package com.quickpay.customer.web;
 
 import com.quickpay.customer.client.WalletClient;
 import com.quickpay.customer.dto.response.WalletResponse;
+import com.quickpay.customer.service.CustomerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -16,9 +17,17 @@ public class MeController { // Me is the use / customer, all the request here wi
 
     private final WalletClient walletClient;
 
+    private final CustomerService customerService;
+
 
     @GetMapping("/wallets")
     public ResponseEntity<List<WalletResponse>> myWallets(@RequestAttribute("cif") String cif){
         return new ResponseEntity<>(walletClient.getWalletsByCif(cif), HttpStatus.OK);
+    }
+
+    @DeleteMapping("/close")
+    public ResponseEntity<Void> closeAccount(@RequestAttribute("cif") String cif){
+        customerService.closeAccount(cif);
+        return new ResponseEntity<>(HttpStatus.OK);
     }
 }
