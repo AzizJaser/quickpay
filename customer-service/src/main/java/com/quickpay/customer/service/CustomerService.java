@@ -6,7 +6,7 @@ import com.quickpay.customer.client.WalletClient;
 import com.quickpay.customer.domain.Customer;
 import com.quickpay.customer.domain.CustomerOutboxEvent;
 import com.quickpay.customer.dto.event.CustomerClosureEvent;
-import com.quickpay.customer.dto.event.CustomerRegistrationEvent;
+import com.quickpay.customer.dto.event.CustomerEvent;
 import com.quickpay.customer.dto.request.CustomerActivateRequest;
 import com.quickpay.customer.dto.request.CustomerRequest;
 import com.quickpay.customer.dto.response.CustomerResponse;
@@ -73,7 +73,7 @@ public class CustomerService {
 
         customerRepository.save(customer);
 
-        CustomerRegistrationEvent event = new CustomerRegistrationEvent(cif, customer.getCustomerName(), customer.getPhoneNumber(),customer.getEmail());
+        CustomerEvent event = new CustomerEvent(cif, customer.getCustomerName(), customer.getPhoneNumber(),customer.getEmail());
         String payload ="";
         try {
             payload = objectMapper.writeValueAsString(event);

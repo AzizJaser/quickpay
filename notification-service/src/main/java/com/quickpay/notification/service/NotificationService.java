@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quickpay.notification.client.NotificationProviderClient;
 import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
-import com.quickpay.notification.dto.event.CustomerRegistrationEvent;
+import com.quickpay.notification.dto.event.CustomerEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
 import com.quickpay.notification.dto.response.ProviderResponse;
 import com.quickpay.notification.enums.NotificationMessage;
@@ -85,8 +85,8 @@ public class NotificationService {
                 .orElseThrow(()-> new CustomerNotFoundException(receivedEvent.cif()));
     }
 
-    public CustomerRegistrationEvent extractCustomerFromRegistrationEvent(String payload) throws JsonProcessingException {
-        CustomerRegistrationEvent customer = objectMapper.readValue(payload, CustomerRegistrationEvent.class);
+    public CustomerEvent extractCustomerFromCustomerEvent(String payload) throws JsonProcessingException {
+        CustomerEvent customer = objectMapper.readValue(payload, CustomerEvent.class);
         return customer;
     }
 }

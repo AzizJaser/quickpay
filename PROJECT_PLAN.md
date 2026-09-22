@@ -5,8 +5,10 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-21 (rev 22 — customer service #4: increments 1–4 COMPLETE + logout + account closure.
+> Last updated: **2026-09-22 (rev 23 — customer service #4: increments 1–4 COMPLETE + logout + account closure.
 > Revocation PROVEN. cif backfill applied — **increment 5 is UNBLOCKED**.
+> ⚠️ **PHASE 8 GAP FOUND 22 SEP: the outbox relay runs ~20× slower than the transfer path**
+> and sat 1.5M events behind for twelve days, undetected. Cleared; metric not yet built.
 > Phase 9 security pass: threat model started, parked. Sessions,
 > login, session filter and the BFF's first wallet call all built and measured. Auth is now
 > half BUILT, half designed: the human is authenticated, the wallet-side ownership check
@@ -97,6 +99,49 @@ regression with a plausible story attached.
 **Nothing in `application.yml` was changed, deliberately** — a system 3.1× over its target
 does not need tuning. The +19.7% is diagnostic. Same earned-fixes rule that kept the circuit
 breaker out of Phase 7.
+
+#### 🔴 PHASE 8 GAP, found 22 Sep — the relay cannot keep up, and nobody measured it
+
+**Twelve days after Phase 8, the wallet outbox still held 1,502,687 unsent rows**, oldest
+`2026-09-10 06:34`. The relay had published **14%** of what Phase 8 generated, and resumed
+republishing on every wallet-service restart. Measured while watching the queue: **≈75
+messages/second**.
+
+```
+transfer path  (measured, Phase 8)    ~1560 TPS
+outbox relay   (measured, 22 Sep)       ~75 msg/s      ← a factor of TWENTY short
+```
+
+⚠️ **Phase 8's headline needs this asterisk.** *"P2P sustains 1560 TPS"* is true of the
+synchronous path and false of the system: every transfer also produces outbox rows, and the
+component that drains them was never in the test because it was never the system under test.
+A load test that stops at the HTTP boundary measures the part you pointed at, not the part
+that falls over.
+
+**Two consequences, both real, neither theoretical:**
+
+- **The notification replica has been ~1.5M events behind since 10 Sep.** Nothing alerted.
+  The outbox is durable, so this was invisible rather than lossy — which is exactly why it
+  survived twelve days.
+- **Starting notification-service would have attempted delivery on all of them** — an SMS
+  and an email provider call plus a `ProcessedEvent` insert each, nearly all failing on
+  `CustomerNotFoundException` (load-test cifs) and dropping. Pure waste, and it would have
+  buried any real event in the noise.
+
+⚠️ **Purging the queue does not help** — the outbox is the durable source of truth and simply
+refills it. That is the pattern working correctly; it means cleanup has to happen at the
+source. **Cleared 22 Sep: 1,740,188 rows deleted, scoped to `created_at::date = 2026-09-10`
+alone**, so every other day of development history survived — including one unsent row from
+the 21 Sep closure test. Ledger untouched at 970,359 rows, `sum(balance) = 0`, zero drift.
+**The outbox is a delivery queue; the ledger is the record.** Deleting undelivered
+notifications for twelve-day-old load-test transfers lost nothing real.
+
+**What this earns (not yet built):**
+1. **Outbox pruning** — promoted from housekeeping to a thing that has already bitten once.
+2. **A relay lag metric.** Unsent count and oldest-unsent age are one query; without them
+   this is undetectable until someone looks by accident, which is how it was found.
+3. **A load test that includes the async path**, or an explicit statement in
+   `PHASE8_REPORT.md` that it does not.
 
 ### 🔨 IN PROGRESS — customer-service (#4), branch `feat/customer-service`
 
@@ -2111,6 +2156,10 @@ manual run proved the sequential case only — the concurrent race is test #7's 
   something can count them. Same family as **S10's "budget before counter"** — a retry that
   cannot succeed is not a retry. *(Accepted for now: recorded 20 Sep rather than fixed,
   because it is bill-service scope inside a customer-service increment.)*
+- [ ] 🔴 **Outbox pruning + a relay-lag metric.** No longer housekeeping — the wallet relay
+  sat 1.5M rows behind for twelve days and nothing noticed (see the Phase 8 gap above).
+  Unsent count and oldest-unsent age are a single query. Applies to **all three** outbox
+  tables: `wallet.outbox_notification`, bill's, and `customer_outbox`.
 - [ ] 🔒 **`/v1/login` is an account-enumeration oracle — for Phase 9 A05.** Found 21 Sep while
   testing closure. The status code distinguishes live accounts:
   `existing + ACTIVE + wrong password -> 400` · `CLOSED -> 403` · `nonexistent email -> 403`.

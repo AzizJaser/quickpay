@@ -1,6 +1,6 @@
-package com.quickpay.customer.dto.event;
+package com.quickpay.notification.dto.event;
 
-public record CustomerRegistrationEvent(
+public record CustomerEvent(
         String cif,
         String customerName,
         String phoneNumber,

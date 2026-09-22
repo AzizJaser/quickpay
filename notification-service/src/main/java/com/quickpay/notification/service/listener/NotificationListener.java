@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.quickpay.notification.client.NotificationProviderClient;
 import com.quickpay.notification.domain.Customer;
 import com.quickpay.notification.domain.ProcessedEvent;
-import com.quickpay.notification.dto.event.CustomerRegistrationEvent;
+import com.quickpay.notification.dto.event.CustomerEvent;
 import com.quickpay.notification.dto.event.NotificationEvent;
 import com.quickpay.notification.enums.NotificationState;
 import com.quickpay.notification.exception.CustomerNotFoundException;
@@ -115,9 +115,13 @@ public class NotificationListener {
             }
             MDC.put(MDC_KEY,correlationId);
             logger.info("message id {} received with routing key {} and correlation id {}",messageId,routingKey,correlationId);
-            CustomerRegistrationEvent event = notificationService.extractCustomerFromRegistrationEvent(payload);
+            if(routingKey.equals("customer.registered")){
+            CustomerEvent event = notificationService.extractCustomerFromCustomerEvent(payload);
             customerRepository.save(new Customer(event.cif(),event.phoneNumber(),event.email(),event.customerName()));
             logger.info("message id {} received with new customer with cif {} and correlation id {}",messageId,event.cif(),correlationId);
+            } else {
+                logger.warn("message id {} received with routing key {} and correlation id {} is not handled",messageId,routingKey,correlationId);
+            }
 
 
         } catch (JsonProcessingException e){
