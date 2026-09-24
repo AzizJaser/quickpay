@@ -1,0 +1,177 @@
+package com.quickpay.customer.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.quickpay.customer.client.WalletClient;
+import com.quickpay.customer.domain.Customer;
+import com.quickpay.customer.domain.CustomerOutboxEvent;
+import com.quickpay.customer.dto.event.CustomerClosureEvent;
+import com.quickpay.customer.dto.event.CustomerEvent;
+import com.quickpay.customer.dto.request.CustomerActivateRequest;
+import com.quickpay.customer.dto.request.CustomerRequest;
+import com.quickpay.customer.dto.response.CustomerResponse;
+import com.quickpay.customer.dto.response.WalletResponse;
+import com.quickpay.customer.enums.CustomerStatus;
+import com.quickpay.customer.enums.WalletStatus;
+import com.quickpay.customer.exception.*;
+import com.quickpay.customer.repository.CustomerRepository;
+import com.quickpay.customer.repository.OutboxEventRepository;
+import com.quickpay.customer.repository.SessionRepository;
+import lombok.AllArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+@AllArgsConstructor
+public class CustomerService {
+
+    private final CustomerRepository customerRepository;
+
+    private final SessionRepository sessionRepository;
+
+    private final OutboxEventRepository outboxEventRepository;
+
+    private final BCryptPasswordEncoder passwordEncoder;
+
+    private final ObjectMapper objectMapper;
+
+    private final WalletClient walletClient;
+
+    private static final Logger logger = LoggerFactory.getLogger(CustomerService.class);
+
+
+
+    // create customer object -> hash password -> save customer -> save the event
+    @Transactional
+    public CustomerResponse registerCustomer(CustomerRequest request){
+
+        if(customerRepository.existsByNationalIdAndStatusNot(request.nationalId(), CustomerStatus.CLOSED)){
+            throw new DuplicateNationalIdException(request.nationalId());
+        }
+        String cif = String.format("%010d", customerRepository.getNextSeq());
+        String hashedPassword = passwordEncoder.encode(request.password());
+
+        Customer customer = Customer.builder()
+                .nationalId(request.nationalId())
+                .cif(cif)
+                .customerName(request.customerName())
+                .password(hashedPassword)
+                .email(request.email())
+                .phoneNumber(request.phoneNumber())
+                .status(CustomerStatus.PENDING)
+                .build();
+
+        customerRepository.save(customer);
+
+        CustomerEvent event = new CustomerEvent(cif, customer.getCustomerName(), customer.getPhoneNumber(),customer.getEmail());
+        String payload ="";
+        try {
+            payload = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException e){
+            logger.error("error serializing customer event to outbox, {}",e.getMessage());
+            throw new ParsingCustomerEventException(cif);
+
+        }
+        UUID eventId = UUID.randomUUID();
+        CustomerOutboxEvent outboxEvent = new CustomerOutboxEvent(eventId,
+                "customer.registered",null,payload, MDC.get("correlationId"),null);
+
+        outboxEventRepository.save(outboxEvent);
+        logger.info("customer created with cif {} and the event is written with id {} successfully",cif,eventId);
+
+        return new CustomerResponse(cif,customer.getCustomerName(),customer.getStatus().toString());
+    }
+
+    @Transactional
+    public CustomerResponse activateCustomer(CustomerActivateRequest request){
+        Customer customer = customerRepository.findByCif(request.cif())
+                .orElseThrow(CustomerNotFoundException::new);
+
+        if(!customer.getStatus().equals(CustomerStatus.PENDING)){
+            switch (customer.getStatus()){
+                case ACTIVE -> {
+                    return new CustomerResponse(customer.getCif(), customer.getCustomerName(), customer.getStatus().toString());
+                }
+                case CLOSED -> {
+                    logger.warn("customer was not found with cif "+customer.getCif());
+                    throw new CustomerClosedException();
+                }
+                case BLOCKED -> {
+                    logger.warn("blocked customer request detected for customer with cif "+customer.getCif());
+                    // sending not found, because we can't tell the blocked customer he/she is blocked.
+                    throw new CustomerNotFoundException();
+                }
+                default -> {
+                    logger.error("NEW STATUS DETECTED WHEN ACTIVATING CUSTOMER -> cif:{} , status:{}",customer.getCif(),customer.getStatus());
+                    throw new RuntimeException("new status detected....");
+                }
+            }
+        }
+
+        if(passwordEncoder.matches(request.password(), customer.getPassword())){
+            customer.setStatus(CustomerStatus.ACTIVE);
+            customer.setUpdatedAt(Timestamp.valueOf(LocalDateTime.now()));
+            customerRepository.save(customer);
+        } else {
+            throw new PasswordNotValidException();
+        }
+
+        return new CustomerResponse(customer.getCif(), customer.getCustomerName(), customer.getStatus().toString());
+    }
+
+    @Transactional
+    public void closeAccount(String cif){
+        Customer customer = customerRepository.findByCif(cif).orElseThrow(()->new CustomerNotFoundException());
+
+        List<WalletResponse> wallets = walletClient.getWalletsByCif(cif);
+
+        for(WalletResponse wallet : wallets){
+            if(wallet.status().equals(WalletStatus.Suspended.toString())){
+                throw new SuspendedWalletException(cif,wallet.walletNumber());
+            }
+        }
+
+        for(WalletResponse wallet : wallets){
+            if (wallet.status().equals(WalletStatus.Active.toString()) || wallet.status().equals(WalletStatus.Pending.toString())){
+                if(wallet.balance() == 0){
+                    walletClient.closeWalletByWalletNumber(wallet.walletNumber());
+                } else {
+                    String idempotencyKey = "s" + UUID.randomUUID().toString().replace("-","");
+                    walletClient.outwardTransfer(wallet.walletNumber(), wallet.balance(),idempotencyKey);
+                    walletClient.closeWalletByWalletNumber(wallet.walletNumber());
+                }
+            }
+        } // after this loop, balances should be zero and wallets closed
+
+        customer.setStatus(CustomerStatus.CLOSED);
+        customerRepository.save(customer);
+        sessionRepository.deleteByCif(cif);
+
+        CustomerClosureEvent event = new CustomerClosureEvent(cif, customer.getCustomerName(), customer.getPhoneNumber(),customer.getEmail());
+        String payload ="";
+        try {
+            payload = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException e){
+            logger.error("error serializing customer event to outbox, {}",e.getMessage());
+            throw new ParsingCustomerEventException(cif);
+
+        }
+        UUID eventId = UUID.randomUUID();
+        CustomerOutboxEvent outboxEvent = new CustomerOutboxEvent(eventId,
+                "customer.closed",null,payload, MDC.get("correlationId"),null);
+
+        outboxEventRepository.save(outboxEvent);
+        logger.info("customer closed with cif {} and the event is written with id {} successfully",cif,eventId);
+    }
+
+}

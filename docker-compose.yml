@@ -56,6 +56,40 @@ services:
       timeout: 3s
       retries: 5
 
+  # Separate Postgres for the customer service (its own data, on host port 5435).
+  # Service #4 (decisions-log entry 6). It owns customer identity and sessions — ADR-0006:
+  # the customer service authenticates the human; wallet and bill authenticate the *service*
+  # and the wallet verifies that the asserted cif owns the named wallet.
+  #
+  # Sessions live HERE, in Postgres, not in Redis. Redis is not earned: the ownership check
+  # needs no cache (the cif arrives with the row lockOrThrow already loads), and "sessions
+  # belong in Redis" is the same shape as "we need a circuit breaker" — a standard answer
+  # adopted before anything measured the need. Five scenarios refused that one.
+  customer-db:
+    image: postgres:16
+    container_name: quickpay-customer-db
+    # wal_level=logical is what makes CDC possible: it puts enough information in the
+    # write-ahead log for a decoder to reconstruct row changes. The default is 'replica',
+    # which carries enough to rebuild a physical standby but NOT enough to say
+    # "column x changed from a to b". Requires a restart — it is not settable at runtime.
+    command: >
+      postgres -c wal_level=logical
+               -c max_replication_slots=4
+               -c max_wal_senders=4
+    environment:
+      POSTGRES_DB: customer
+      POSTGRES_USER: customer
+      POSTGRES_PASSWORD: customer
+    ports:
+      - "5435:5432"
+    volumes:
+      - customer_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customer -d customer"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # Message broker for domain-event fan-out (ADR-0005): the wallet and bill service
   # publish; notifications and history consume.
   #   AMQP (apps connect here) : localhost:5672
@@ -79,7 +113,129 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---- CHANGE DATA CAPTURE: customer-db -> RabbitMQ (decisions-log entry 9) ----
+  #
+  # Debezium Server reads customer-db's write-ahead log and publishes row changes to the
+  # RabbitMQ you already run. NOT Kafka: Debezium's usual deployment is Kafka Connect, and
+  # decision 7 parked Kafka. Debezium SERVER is the standalone variant with pluggable sinks,
+  # so this is CDC without adopting Kafka.
+  #
+  # WHY CDC AT ALL, given you already built a transactional outbox twice? Because they solve
+  # the SAME problem — the dual-write problem — and seeing both is the point. The outbox
+  # publishes an event you designed, via a relay you control. CDC publishes a row change,
+  # read from the WAL, with no application involvement at all.
+  #
+  # ⚠️ THE FAILURE MODE TO KNOW ABOUT, and a Phase 7 scenario waiting to happen:
+  # a replication slot pins the WAL. If this container stops while the database keeps
+  # writing, Postgres CANNOT recycle WAL segments the slot still needs — pg_wal grows until
+  # the disk fills and the database stops accepting writes. Stopping a consumer normally
+  # causes a backlog; stopping THIS consumer can take the database down.
+  #   watch it with:  select slot_name, active,
+  #                          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+  #                   from pg_replication_slots;
+  # ⚠️ NOT STARTED BY DEFAULT — see decisions-log entry 9.
+  # CDC was built to LEARN it, and the verdict after building it was that the relay outbox
+  # is the better choice for this project. Kept behind a profile so the working
+  # configuration survives as a reference; it is not part of the running system.
+  #   docker compose --profile cdc up -d debezium
+  # Leaving it running is not free: its replication slot pins WAL, and if the container
+  # stops while the database keeps writing, pg_wal grows until the disk fills.
+  debezium:
+    profiles: ["cdc"]
+    image: debezium/server:2.7.3.Final
+    container_name: quickpay-debezium
+    depends_on:
+      customer-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      # --- sink: the RabbitMQ already in this compose file ---
+      DEBEZIUM_SINK_TYPE: rabbitmq
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_HOST: rabbitmq
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_PORT: 5672
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_USERNAME: quickpay
+      DEBEZIUM_SINK_RABBITMQ_CONNECTION_PASSWORD: quickpay
+      DEBEZIUM_SINK_RABBITMQ_EXCHANGE: quickpay.cdc
+      DEBEZIUM_SINK_RABBITMQ_AUTODELETE: "false"
+      # Without this the routing key is EMPTY, so a topic exchange can only be bound with
+      # '#' and no consumer can filter by table or operation. With it, the key becomes the
+      # topic name: quickpay.customer.public.customers
+      DEBEZIUM_SINK_RABBITMQ_ROUTINGKEYFROMTOPICNAME: "true"
+
+      # --- source: customer-db's WAL ---
+      DEBEZIUM_SOURCE_CONNECTOR_CLASS: io.debezium.connector.postgresql.PostgresConnector
+      DEBEZIUM_SOURCE_DATABASE_HOSTNAME: customer-db
+      DEBEZIUM_SOURCE_DATABASE_PORT: 5432
+      DEBEZIUM_SOURCE_DATABASE_USER: customer
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: customer
+      DEBEZIUM_SOURCE_DATABASE_DBNAME: customer
+      DEBEZIUM_SOURCE_TOPIC_PREFIX: quickpay.customer
+      # pgoutput ships inside Postgres 10+ — no extension to install, unlike decoderbufs/wal2json
+      DEBEZIUM_SOURCE_PLUGIN_NAME: pgoutput
+      DEBEZIUM_SOURCE_SLOT_NAME: quickpay_customer_slot
+      DEBEZIUM_SOURCE_PUBLICATION_NAME: quickpay_customer_pub
+      # Capture the OUTBOX table, never `customers` itself (decisions-log entry 9).
+      #
+      # Two reasons, and the second is not negotiable:
+      #  1. Capturing `customers` publishes customer-service's COLUMN NAMES to every
+      #     consumer — rename one and notification breaks across a service boundary.
+      #  2. `customers` will hold a BCrypt `password_hash`. CDC on that table would
+      #     broadcast every password hash to the broker, durable on disk in RabbitMQ,
+      #     readable by anything that binds to the exchange.
+      #
+      # A VIEW cannot be used — Postgres rejects it:
+      #   ERROR: cannot add relation "v" to publication / not supported for views
+      # Logical decoding reads the WAL, and a view generates no WAL. Only real tables do.
+      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: public.customer_outbox
+
+      # --- Outbox Event Router: unwrap the outbox row into the event it carries ---
+      # Without this, consumers receive a Debezium envelope describing a row INSERT
+      # (before/after/op/source). With it, they receive the `payload` column as the message
+      # body, routed by `aggregatetype`. The consumer sees an event you designed.
+      # Without these the message body is a Kafka Connect envelope —
+      # {"schema":{...},"payload":"{...}"} — and the consumer has to unwrap twice.
+      # With them it is the event JSON exactly as written to the outbox row.
+      DEBEZIUM_FORMAT_VALUE: json
+      DEBEZIUM_FORMAT_VALUE_SCHEMAS_ENABLE: "false"
+      DEBEZIUM_FORMAT_KEY: json
+      DEBEZIUM_FORMAT_KEY_SCHEMAS_ENABLE: "false"
+
+      DEBEZIUM_TRANSFORMS: outbox
+      DEBEZIUM_TRANSFORMS_OUTBOX_TYPE: io.debezium.transforms.outbox.EventRouter
+      # These names must match V1__customer_and_outbox.sql exactly.
+      # V1 was later reshaped to be identical to outbox_bill_notification (event_id /
+      # event_type / sent_at / payload / correlation_id / created_at) so the project has ONE
+      # outbox shape and one relay pattern. Debezium's own convention (aggregatetype /
+      # aggregateid) is therefore gone, and this config follows the table, not the docs.
+      # No event-key field is set: there is no aggregate-id column to use as one.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_ID: event_id
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TYPE: event_type
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_PAYLOAD: payload
+      # The payload column is jsonb, which Debezium types as a STRING. Without this the
+      # consumer receives a JSON string containing JSON and has to parse twice.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_EXPAND_JSON_PAYLOAD: "true"
+      # V1 carries a correlation_id column; promote it to a message header so a single grep
+      # still follows one request across the customer → notification hop. Without this that
+      # hop would be the only dark stretch left after the August traceability work.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELDS_ADDITIONAL_PLACEMENT: correlation_id:header
+      DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: event_type
+      # NOT setting route.topic.replacement deliberately. Its default is
+      # 'outbox.event.${routedByValue}', which Debezium expands itself. Setting it here
+      # fails: Quarkus (Debezium Server's runtime) uses ${...} for ITS OWN config
+      # expansion, so the placeholder is resolved before Debezium ever sees it, yields
+      # null, and the server dies with a bare NullPointerException at bean creation.
+      # Routing key therefore becomes: outbox.event.<aggregatetype>
+      # Where Debezium remembers how far it has read. On a named volume so a container
+      # restart resumes rather than re-snapshotting the whole table.
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
+      DEBEZIUM_SOURCE_OFFSET_FLUSH_INTERVAL_MS: 0
+    volumes:
+      - debezium_data:/debezium/data
+
 volumes:
+  debezium_data:
+  customer_pgdata:
   wallet_pgdata:
   bill_pgdata:
   rabbit_data:

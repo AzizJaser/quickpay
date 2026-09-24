@@ -62,4 +62,13 @@ public class GlobalExceptionHandler {
         problem.setTitle("Error while serialise a notification event");
         return problem;
     }
+    @ExceptionHandler(CifMismatchException.class)
+    public ProblemDetail handlerCifMismatchException(CifMismatchException e){
+        logger.error("wallet number {} doesn't belong to cif number{}", e.getWalletNumber(), e.getCif());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+        problem.setTitle("cif mismatch");
+        return problem;
+    }
 }

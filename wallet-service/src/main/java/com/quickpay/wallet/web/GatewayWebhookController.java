@@ -43,7 +43,7 @@ public class GatewayWebhookController {
         }
         WebhookRequest request = objectMapper.readValue(rawBody, WebhookRequest.class);
         try {
-            walletService.topUp(request.walletNumber(),request.amount(),request.gatewayTxnId());
+            walletService.topUp(request.walletNumber(),request.amount(),request.gatewayTxnId(),null);
         }
         catch (DuplicatedEntryException e){
             // it's an intentional idempotent no-op

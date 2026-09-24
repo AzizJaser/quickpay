@@ -5,29 +5,82 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-10 (rev 16 — Phases 7 and 8 COMPLETE. Definition of done SIGNED,
-> 2 of 3 gates closed. Next: auth, with a customer service as #4.)**
+> Last updated: **2026-09-24 (rev 25 — increment 6 DONE (payment path whole, cif threaded end to end); ✅ GATE 1 CLOSED. Auth finished to minimum honest scope:
+> 5A ownership check BUILT + measured (forged pair → 403, `A04`); 5B service-auth DEFERRED by
+> decision with the hole demonstrated; step-up auth recorded in ADR-0006. All three DoD gates
+> closed. Customer service #4: increments 1–4 + logout + account closure + cif backfill, all done.
+> ⚠️ Phase 8 gap (22 Sep): outbox relay ~20× slower than the transfer path; cleared, metric TODO.
+> ⚠️ Gate closed ≠ production-ready — 5B hole is real, 8080 host-reachable, no TLS in dev.
+> Sessions, login, filter, BFF wallet call all built and measured. The wallet-side ownership check
+> (increment 5) is not started. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
 >
-> **State in one paragraph.** The build is done and merged to `main`: wallet, bill and
-> notification services, three databases, RabbitMQ, three simulators, ADRs and diagrams.
-> **Phase 7 ran 14 sabotage scenarios** (~56% predicted, every surprise explained) and built
-> **four** protections — bulk inquiry, `scheduling.pool.size`, `mandatory` + returns callback,
-> and a two-sided settlement window — while **deliberately refusing a circuit breaker across
-> five scenarios**. **Phase 8 measured P2P at ~1560 TPS against a 500 TPS requirement (3.1×
-> over)**, named the bottleneck (database CPU) and showed the pool "fix" the wrong diagnosis
-> implied makes it **11% worse**. The golden rule has never moved: zero drift and zero
-> duplicate keys across ~929,000 load-test transfers.
+> **State in one paragraph.** `main` holds the finished build — wallet, bill and notification
+> services, three databases, RabbitMQ, three simulators, six ADRs, 14 sabotage records and two
+> phase reports. **Phase 7** ran 14 scenarios (~56% predicted), built **four** protections and
+> **deliberately refused a circuit breaker across five**. **Phase 8** measured P2P at
+> **~1560 TPS against a 500 TPS requirement** (3.1× over), named the bottleneck as database
+> CPU, and showed the pool "fix" the wrong diagnosis implied makes it **11% worse**. The golden
+> rule has never moved: zero drift, zero duplicate keys, ~929,000 load-test transfers.
 >
-> **Next: requirement #1, auth** — and it is *not* "a filter in front of the controllers".
-> `LedgerEntryController` takes `debitedWalletNumber` from the request body with no notion of
-> a caller anywhere, so the missing rule is an **authorization** rule on the money path.
-> Decisions 6 and 7 (10 Sep) make **service #4 a customer service** and park **history and any
-> Kafka/DWH work** to the separate Kafka project. **Auth is now DESIGNED — `adr/0006`** — and the
-> remaining work is a build, not a decision.
+> **In flight on `feat/customer-service`:** increment 1 is **complete** — register → outbox →
+> relay → queue → consumer → replica, verified end to end, with correlation ids surviving the
+> whole chain. Measured on the way: with a queue bound and nothing reading it there were
+> **zero UNROUTABLE lines** while every outbox row read `sent_at = t`.
+> **`sent_at` means handed to the broker, nothing more.**
+>
+> **Next: the wallet-side ownership check (increment 5)** — ✅ **unblocked 19 Sep**; the cif
+> backfill gave 31 pre-auth wallets real owners (`docs/migrations/`). Increments 2–4 landed:
+> sessions, login, the session filter, and the BFF's first proxied wallet call, plus logout
+> with revocation proven. Sessions are
+stateful by decision — a JWT cannot be revoked, and a `BLOCKED` customer holding a live token
+is not acceptable on a money platform. **Blocking or closing deletes the sessions**, in the
+same transaction; see ADR-0006. That makes revocation the *only* enforcement point for a
+block, which depends on the BFF being the sole door — an assumption the same ADR records as
+currently false. Auth is
+> **designed** (`adr/0006`) and the remaining work is a build, not a decision — the missing
+> rule is *authorization* on the money path, since `LedgerEntryController` still takes
+> `debitedWalletNumber` from the request body with no notion of a caller.
 
 ---
 
 ## ▶ NEXT ACTION (update this line every session)
+
+### ◀ **START HERE — 20 Sep. Pick one of three; they are not equally urgent.**
+
+*Session of 19 Sep ended clean: working tree empty, branch `feat/customer-service`, 5 commits
+that day (increments 2, 3, 4, logout, cif backfill). Customer-service is **not finished**.*
+
+**1 · block/close endpoints + session revocation — RECOMMENDED, and small.**
+⚠️ **ADR-0006 currently documents a control that does not exist.** It states session
+revocation is the *sole* enforcement point for a block — but nothing can set a customer to
+`BLOCKED`, so `deleteByCif` sits written and uncalled. The delete must be **in the same
+transaction** as the status change (both or neither; a committed status change with a failed
+delete leaves exactly the state being prevented). Derived deletes are **not** transactional
+by default. This also unblocks Phase 9's **A01**, which is currently gated on work nobody
+has scheduled.
+
+**2 · Tests — customer-service has ZERO.** Not one file in `src/test`. Everything proven on
+19 Sep — the forged-cif evidence, the 35 ms / 2,019 ms failure split, the logout round trip,
+the migration spot checks — lives in commit messages and nowhere that runs again. The
+`pom.xml` already argues this: 15 tests across the other modules all call service layers
+directly, which is why four `WalletController` endpoints returned 500 for weeks while
+staying green. **This service is HTTP; MockMvc belongs here.** First assertion to encode:
+a valid session plus a forged `cif` header/param returns the caller's **own** wallets —
+reading the code failed to catch that bug three times; the request caught it every time.
+
+**3 · Increment 5 — the wallet-side ownership check.** ✅ Unblocked 19 Sep by the cif
+backfill. Mostly wallet-service work. ⚠️ 200 load-pool wallets remain orphaned by design —
+if an increment-5 test reaches for one it fails for reasons unrelated to the code under test.
+
+**Also open, smaller:** "log out everywhere" (`deleteByCif` + endpoint — *earned*: one
+customer held 5 concurrent sessions and logout kills one) · expired-session pruning ·
+`CreateWalletRequest` has no cif `@Pattern`, so non-conforming wallets can still be created
+(when that lands, `seed.sh` must register customers instead of inventing `88…` cifs).
+
+**Parked:** Phase 9 step 0 — `docs/security/THREAT_MODEL.md` has 15 questions awaiting the
+human and 6 reviewer challenges to the plan. Hard stop 24 Oct.
+
+---
 
 ### ✅ PHASE 8 COMPLETE — 10 Sep. 📄 **`docs/load/PHASE8_REPORT.md`**
 
@@ -46,6 +99,295 @@ regression with a plausible story attached.
 **Nothing in `application.yml` was changed, deliberately** — a system 3.1× over its target
 does not need tuning. The +19.7% is diagnostic. Same earned-fixes rule that kept the circuit
 breaker out of Phase 7.
+
+#### 🔴 PHASE 8 GAP, found 22 Sep — the relay cannot keep up, and nobody measured it
+
+**Twelve days after Phase 8, the wallet outbox still held 1,502,687 unsent rows**, oldest
+`2026-09-10 06:34`. The relay had published **14%** of what Phase 8 generated, and resumed
+republishing on every wallet-service restart. Measured while watching the queue: **≈75
+messages/second**.
+
+```
+transfer path  (measured, Phase 8)    ~1560 TPS
+outbox relay   (measured, 22 Sep)       ~75 msg/s      ← a factor of TWENTY short
+```
+
+⚠️ **Phase 8's headline needs this asterisk.** *"P2P sustains 1560 TPS"* is true of the
+synchronous path and false of the system: every transfer also produces outbox rows, and the
+component that drains them was never in the test because it was never the system under test.
+A load test that stops at the HTTP boundary measures the part you pointed at, not the part
+that falls over.
+
+**Two consequences, both real, neither theoretical:**
+
+- **The notification replica has been ~1.5M events behind since 10 Sep.** Nothing alerted.
+  The outbox is durable, so this was invisible rather than lossy — which is exactly why it
+  survived twelve days.
+- **Starting notification-service would have attempted delivery on all of them** — an SMS
+  and an email provider call plus a `ProcessedEvent` insert each, nearly all failing on
+  `CustomerNotFoundException` (load-test cifs) and dropping. Pure waste, and it would have
+  buried any real event in the noise.
+
+⚠️ **Purging the queue does not help** — the outbox is the durable source of truth and simply
+refills it. That is the pattern working correctly; it means cleanup has to happen at the
+source. **Cleared 22 Sep: 1,740,188 rows deleted, scoped to `created_at::date = 2026-09-10`
+alone**, so every other day of development history survived — including one unsent row from
+the 21 Sep closure test. Ledger untouched at 970,359 rows, `sum(balance) = 0`, zero drift.
+**The outbox is a delivery queue; the ledger is the record.** Deleting undelivered
+notifications for twelve-day-old load-test transfers lost nothing real.
+
+**What this earns (not yet built):**
+1. **Outbox pruning** — promoted from housekeeping to a thing that has already bitten once.
+2. **A relay lag metric.** Unsent count and oldest-unsent age are one query; without them
+   this is undetectable until someone looks by accident, which is how it was found.
+3. **A load test that includes the async path**, or an explicit statement in
+   `PHASE8_REPORT.md` that it does not.
+
+### 🔨 IN PROGRESS — customer-service (#4), branch `feat/customer-service`
+
+**✅ INCREMENT 1 COMPLETE — the path works end to end.**
+
+```
+POST /v1/customers  ->  customer row + outbox row (one transaction)
+                    ->  relay publishes to quickpay.events
+                    ->  notification.customer-events
+                    ->  listener upserts
+                    ->  notification.customers  ✅ replicated
+```
+
+**Data-ownership option A is real:** customer-service owns customers, notification holds a
+replica fed by events, no synchronous call on the message path.
+
+Correlation ids survive the whole chain — a header sent to customer-service still tags log
+lines in notification-service after a database column, a relay poll, an AMQP hop and hours
+of queue idle time.
+
+⚠️ **The consumer drops anything it cannot handle** — chosen, not inherited, and verified with
+a poison message (2 log lines, no requeue loop). The consequence is larger than one lost
+notification: a dropped `customer.registered` means the replica never learns that cif, so
+every later money event for that person hits `CustomerNotFoundException` and is dropped too —
+S10 arm A, permanently, for that customer. **Recovery is reconciliation, not retry:**
+`customer_outbox` MINUS `notification.customers` names exactly what never landed.
+
+| ✅ done | ⬜ remaining |
+|---|---|
+| module, `customer-db` 5435, `application.yml` | **wallet-side ownership check** (increment 5) — ✅ unblocked 19 Sep |
+| **V1 · V2 · V3 · V4** applied | cif threaded BFF → bill → wallet (increment 6) |
+| entity · repository · service · controller · handlers | MockMvc tests for the BFF (step 6, not yet written) |
+| `CorrelationIdFilter` · **`SessionFilter`** | block/close endpoints + session revocation |
+| **the relay** + `QueueCallBack` + exchange config | a dead-letter queue, if dropping ever proves too costly |
+| **second queue** + binding + **the consumer** | |
+| ✅ **replication verified end to end** | |
+| ✅ **inc. 2 — sessions + login** (`V4`, SHA-256 token, BCrypt password) | |
+| ✅ **inc. 3 — session validation filter**, deny-by-default | |
+| ✅ **inc. 4 — BFF proxies a wallet call**, measured end to end | |
+
+---
+
+**✅ INCREMENTS 2–4 COMPLETE — 19 Sep. The customer is authenticated; the wallet is not yet.**
+
+```
+POST /v1/login   ->  BCrypt verify  ->  random 32-byte token, SHA-256 hashed into `sessions`
+                 ->  client holds the token, the DB holds only its hash
+GET /v1/me/wallets  ->  SessionFilter validates, sets request ATTRIBUTE "cif"
+                    ->  MeController reads @RequestAttribute (never a header, never a param)
+                    ->  WalletClient  ->  GET /v1/wallets/{cif}/all  ->  list
+```
+
+**Data-ownership answer for reads (decided 19 Sep):** the BFF never names a wallet number.
+It asks the wallet *"which wallets belong to this cif?"*, because the wallet owns that
+relationship. The alternative — the client supplying a wallet number the BFF forwards —
+was rejected: it asks the client to remember something the wallet already knows, then trusts
+the answer.
+
+⚠️ **The defence is structural, not a check.** A forged `cif` header or query parameter is not
+*rejected* — it is never read. Measured: with a valid session, adding `cif: 0000000008` or
+`?cif=5100000001` returns the caller's **own** wallet, byte-identical to the clean request,
+while that cif genuinely owns five wallets holding real balances. **There is no branch to
+bypass**, which is stronger than a 403. Three earlier attempts at that one parameter each
+reintroduced the hole (unannotated → query param; Spring *Messaging* `@Header` → query param;
+`@RequestHeader` → client-supplied header). Reading the code did not catch any of them; the
+forged-cif request did.
+
+**Measured failure behaviour — same status to the customer, different evidence for you:**
+
+| wallet state | status | latency | `Caused by:` |
+|---|---|---|---|
+| stopped | **503** | **35 ms** | `java.net.ConnectException: Connection refused` |
+| hung | **503** | **2,019 ms** | `java.net.SocketTimeoutException: Read timed out` |
+
+A **58× cost difference** behind an identical response. That only works because the exception
+carries its cause (`super(message, cause)`) and the log line passes the throwable with **no
+`{}` placeholder** — SLF4J treats a trailing argument as a throwable only when placeholders
+are fewer than arguments. Both were got wrong repeatedly; both are load-bearing.
+
+⚠️ **Predicted inner exception was wrong.** Reasoning from the classpath said
+`HttpTimeoutException`; the measurement says `SocketTimeoutException`. **Never branch on the
+inner exception type** — it depends on which request factory Spring selected. Log the chain.
+
+`cif` now rides in **MDC** (set in `SessionFilter`, removed in a `finally`), so every log line
+in an authenticated request carries it without any method taking it as a parameter. Built for
+increment 4's error messages; it immediately paid for itself — the by-cif call has no wallet
+number to report, and doesn't need one.
+
+**✅ LOGOUT — built 19 Sep, and revocation is now PROVEN rather than assumed.**
+`validateSession` returns the `Session` (not just the cif), the filter publishes `sessionId`
+as a second request attribute, and `POST /v1/logout` deletes that one row. Measured:
+
+| call | result |
+|---|---|
+| `POST /v1/logout` | **204** |
+| `GET /v1/me/wallets`, same token | **401** |
+| `POST /v1/logout` again | **401 — from the filter.** The controller never runs |
+
+**One round trip to dead, no cache to wait out.** This is the mechanism ADR-0006 rests its
+entire block-enforcement argument on; until today it had never been executed.
+
+⚠️ **The row count is the real finding.** Sessions for that customer went **5 → 4**. Logout
+removed exactly one — correct — which makes visible that **four other live sessions** remain,
+accumulated from a single day of testing, each good for its full 60-minute TTL. Nothing prunes
+them and nothing can reach them. **So the blast radius of a stolen token is not one session,
+it is every session that customer has opened inside the TTL window** — and logging out would
+end the wrong one. That answers a question A01 was going to ask, with a measurement.
+
+Two items now have a *named trigger* rather than vague intent:
+- **"log out everywhere"** — `deleteByCif` already exists; needs `@Transactional` and an
+  endpoint. It is the control that matters when a customer suspects theft.
+- **expired-session pruning** — dead rows are filtered out of every query and never removed.
+  Same family as the outbox pruning item.
+
+**✅ ACCOUNT CLOSURE — built 21 Sep. `DELETE /v1/me/close`, 5 of 6 predictions correct.**
+
+```
+suspended wallet anywhere?  ->  409, nothing touched
+close each Active/Pending wallet (sweeping any balance to Outward first)
+[one transaction] status=CLOSED · sessions deleted · customer.closed to outbox
+```
+
+**BLOCK was deliberately NOT built.** Close and block are different actors: close is the
+customer acting on themselves (cif from the session, unforgeable); block is the bank acting on
+someone else — and **this system has no admin actor**. An open block endpoint would let anyone
+block anyone, which is worse than the gap it closes. Block waits for increment 5's per-service
+secrets and a `customer:block` scope. ⚠️ **Consequence: Phase 9's A01 stays gated**, since it
+measures time-to-dead after `BLOCKED`.
+
+**Suspended wallets block closure entirely, regardless of balance.** A suspension is a hold the
+*bank* placed; a close path that sweeps funds to Outward would be a way to walk money out of a
+freeze. Zero-balance suspended wallets are blocked too — closing is one-way, and a later
+reversal into a Closed wallet strands the money.
+
+| case | measured |
+|---|---|
+| no wallets | 200, CLOSED, sessions 0, outbox written |
+| **Pending** wallet | Closed — *the prediction that missed; see below* |
+| Active + 3,000 | wallet Closed, Outward 60 → **3,060** |
+| 1 of 5 Suspended | **409**, all five untouched, customer still ACTIVE |
+| login afterwards | 403 |
+| golden rule | `sum=0` · 0 drift · 0 duplicate idempotency keys |
+
+⚠️ **The miss, and why it mattered.** The loop filtered on `Active`, so a never-activated wallet
+was skipped — leaving a **Pending wallet owned by a CLOSED customer**. Inert on its own
+(`transfer` demands both sides Active), but `PUT /v1/wallets/activate/{n}` has **no
+authentication and does not check customer status** (ADR-0006: the wallet deliberately does not
+know about customers). So it was a live path back into a closed account. Fixed with an explicit
+`Active || Pending` allowlist — a denylist would silently sweep in any status added later.
+
+**Three bugs caught in review before the run, all silent at compile time:**
+1. `@Transactional` on a **private** method — proxies cannot intercept private methods, so the
+   annotation was ignored. The method was also never called, and self-invocation would have
+   bypassed the proxy anyway: three independent reasons for no transaction.
+2. `String.equals(anEnum)` is **always false** — `WalletResponse.status` is a `String`, so the
+   status filter never matched, the loop body never ran, and the customer would have been marked
+   CLOSED with every wallet still Active and funded. ⚠️ **`==` would not have compiled**; the
+   safer-looking method is the one that let it through.
+3. `anyMatch` with a `throw` inside — it **short-circuits on the first element**, so only wallet
+   #1 was ever examined. Replaced with a plain loop; the verification suspended the **third** of
+   five wallets specifically to prove the difference.
+
+**✅ INCREMENT 5 IS UNBLOCKED — cif backfill applied 19 Sep.**
+📄 **`docs/migrations/cif-backfill-2026-09-19.md`** + the 23-row mapping beside it.
+
+The blocker was real: every wallet cif started `5`–`9`, customer-service issues `^0[0-9]{9}$`,
+and **1 of 232 wallets conformed**. A correctly built ownership check would have rejected all
+231 — not because the check was wrong, but because none of those wallets had an owner that
+could exist.
+
+⚠️ **The obvious fix was impossible.** You cannot create a customer with cif `5100000001`:
+`ck_cif_format` rejects it at INSERT, and registration never accepts a cif anyway (it comes
+from `seq_customers_cif`). That format rule is load-bearing — it is what keeps cifs and
+national IDs disjoint. So the migration ran the **other** way: register a customer, take the
+issued cif, rewrite the wallet.
+
+**What made it cheap: `cif` appears in exactly one table.** The ledger keys on
+`wallet_number`, so this was a 31-row `UPDATE` with zero ledger impact — including
+`5100000001`, which carries 40,524 ledger rows that were never touched.
+
+Predicted and confirmed: 23 rows `0000000012`–`0000000034` · `sum(balance) = 0` · **0 drift**.
+`231 → 200` non-conforming; `1 → 32` owned. **The golden rule held across an ownership
+rewrite on 31 live wallets.** Verified end to end through the BFF — four migrated customers
+logged in and saw exactly their own wallets at their exact pre-migration balances.
+
+⚠️ **200 load-pool wallets left non-conforming, deliberately** — `seed.sh` regenerates them,
+so fabricating 200 customers for wallets that get discarded each run buys nothing. They are
+unreachable through the BFF by construction, which is correct: they have no owner.
+
+⚠️ **The cause is not fixed.** `CreateWalletRequest` validates length but **not format**, so
+wallet 232 can be created non-conforming tomorrow. The `^0[0-9]{9}$` rule belongs there too.
+When it lands, `seed.sh` must register customers rather than inventing `88…` cifs.
+
+✅ **The internal-wallet filter is proven**, not assumed: `GET /v1/wallets/0000000000/all`
+returns `[]` because the query carries `is_internal = false`. `0000000000` *satisfies*
+`ck_cif_format`, so without that clause a customer ever issued it would have been handed the
+TopUp float. This is the read-side half of ADR-0006's open item on internal wallets; the
+write-side half is still open.
+
+⚠️ **The BFF re-exposes the wallet's DTO verbatim.** `WalletResponse` mirrors the wallet's
+shape field-for-field with no translation layer, so a new field in wallet-service reaches a
+customer's phone automatically rather than by choice. Acceptable while the shapes match;
+it stops being acceptable the first time the wallet adds something internal.
+
+---
+
+**The schema enforces the customer lifecycle in constraints, not code** (V1–V3):
+`ck_cif_format` (`^0[0-9]{9}$`, issued from a capped sequence) · `ck_national_id_format`
+(`^[12][0-9]{9}$`) · three **partial** unique indexes `WHERE status <> 'CLOSED'` on
+national_id, email and phone.
+
+Those partial indexes are what let a closed customer return: old row retained for audit, new
+cif, **same email and phone**. A plain `UNIQUE` made returning impossible — proven, then
+fixed. And the two `CHECK`s keep cif and national_id disjoint (no string starts with both `0`
+and `1`) without resizing columns across **970,358 ledger rows** in two services.
+
+⚠️ **Verified 16 Sep — `mandatory` does NOT mean delivered.** With `customer.*` bound and no
+consumer: **zero UNROUTABLE lines**, queue depth **6**, every outbox row `sent_at = t`, and
+the replica **empty**. Three distinct failure modes, only one of which the callback can see:
+
+| | |
+|---|---|
+| no binding | `mandatory` **fires** — S08, the callback catches it |
+| bound, no consumer | message waits. Honest — the depth is visible |
+| delivered then dropped | **nothing fires** — S10 arm A: 26 ms, one `WARN`, gone |
+
+**`sent_at` means handed to the broker. Nothing more.**
+
+**Carried forward:**
+- ✅ *(closed 15 Sep)* `notification.customers.email` widened to `varchar(254)` — V15
+- ✅ *(closed 16 Sep)* `scheduling.pool.size: 2` set **before** job #2 exists
+- 🔴 **`NotificationMessage` has no `customer.registered` entry.** It throws on unknown keys by
+  design, so if the new consumer ever routes through it the listener's `catch (Exception)`
+  drops the event — S10 arm A exactly. The new consumer should not touch that enum at all.
+- 🔴 **The outbox is never pruned.** Nothing reads it after `sent_at` is set. Decide before the
+  first million rows — and note S10's reconciliation needs those rows to compare against, so
+  delete-immediately would make it impossible.
+- 🟡 Two tidy-ups: `String payload = "";` can be `String payload;`, and the `logger.error`
+  immediately before `throw new ParsingCustomerEventException` double-reports.
+
+**The six queued events are a useful accident** — the consumer will be tested against messages
+it did not produce, the moment it starts. A single field-name disagreement in the payload
+reproduces the `original_entry_id`/`originalEntryId` defect: the class only exercising the
+path can catch.
+
+---
 
 **▶ NEXT: AUTH (requirement #1), with a CUSTOMER SERVICE as #4.** Two decisions taken
 10 Sep — see decisions log entries **6** and **7**:
@@ -1247,15 +1589,22 @@ QuickPay is **done** when all three are true:
 
 | gate | state |
 |---|---|
-| 1 · seven business requirements | 🟡 **OPEN** — 5 done, **#6 closed out** by decisions-log entry 6, **#1 auth still open** |
+| 1 · seven business requirements | ✅ **CLOSED 24 Sep** — **authorization built** (5A, measured); **authentication delegated** to customer-service (sessions/login/logout, revocation proven); **service auth (5B) deferred by decision, hole on record**. #6 closed out (entry 6). See close-out below. |
 | 2 · sabotage log | ✅ **MET 9 Sep** — 14 runs, ~56% predicted, every surprise explained |
 | 3 · load report | ✅ **MET 10 Sep** — 1560 TPS, bottleneck named, +19.7% and one −11% |
 
-⚠️ **Two of three gates are closed. QuickPay is NOT done.** Gate 1 requires **auth** to be
-either built or explicitly closed out in the decisions log. It is now **in progress**, not
-deferred — decisions-log entry 6 gives it an owner (the customer service), and the plan's
-original justification for deferring it ("purely additive") was **withdrawn on 10 Sep** as
-false of authorization.
+✅ **ALL THREE GATES CLOSED, 24 Sep.** Gate 1 required auth to be **either built or explicitly
+closed out**. Both, in the honest split: the human is authenticated (customer-service BFF), the
+money path is authorized (5A ownership check, forged pair → 403, measured in
+`docs/security/A04-idor-money-path.md`), and the one unbuilt piece — **5B service-to-service
+auth** — is closed *by decision* with its hole demonstrated and documented, not left silent.
+That is exactly what Gate 1's "closed out" clause demands: a decision on the record, not a gap.
+
+⚠️ **Gate closure is not "production-ready."** 5B is a real hole (any caller naming the true
+cif moves money; 8080 is reachable from the host), TLS is absent by design in dev, and there
+is no rate limiting. These are **recorded, triggered decisions** (ADR-0006, `ASVS-L1.md`
+accepted-risk, `THREAT_MODEL.md` §6) — the finish line for a *learning* project, which is to
+understand and decide every control, not to ship one.
 
 **Adopting this definition does not declare the project finished.** It fixes the finish line
 so it cannot move — which is the entire point of writing one down.
@@ -1292,7 +1641,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 
 | # | Requirement | Status |
 |---|---|---|
-| 1 | Accounts — customers hold a SAR wallet (thin auth) | 🟡 wallets ✅ · **auth DESIGNED 12 Sep** (ADR-0006), not yet built |
+| 1 | Accounts — customers hold a SAR wallet (thin auth) | ✅ **CLOSED 24 Sep** — wallets ✅ · authN delegated to customer-service (session/login/logout, revocation proven) · authZ built on the money path (5A, forged pair → 403) · **service auth 5B deferred by decision, hole measured** (`A04`, ADR-0006 close-out) |
 | 2 | Top-up via async gateway; callbacks may duplicate or never arrive | ✅ done (HMAC webhook + idempotency) |
 | 3 | P2P transfer, instant; app auto-retries after 5s | ✅ done (idempotency key makes retry safe) |
 | 4 | Bill payment via slow (≤60s) flaky biller; never lose customer money, never show "paid" falsely | ✅ **done 2026-07-01** |
@@ -1584,6 +1933,114 @@ be torn up to reach the target. The baseline conforms to the target architecture
    the ownership check runs before or after the row lock — Phase 8 measured `Lock:tuple`
    contention as real.
 
+9. **CDC from customer-db to RabbitMQ, on an OUTBOX table. → RESOLVED 2026-09-13.**
+
+   **Debezium Server reads customer-db's WAL and publishes to the existing RabbitMQ.**
+   Explicitly **not Kafka** — Debezium's usual deployment is Kafka Connect; Debezium *Server*
+   is the standalone variant with pluggable sinks, so decision 7 stands unchanged.
+
+   **Why do this at all, having built a transactional outbox twice?** Because CDC and the
+   outbox solve the **same problem** — the dual-write problem — and seeing both is the point.
+   The outbox publishes an event you designed via a relay you control; CDC publishes a row
+   change read from the WAL with no application involvement.
+
+   **It captures an outbox table, NOT `customers`.** Two reasons:
+   1. Capturing `customers` publishes customer-service's **column names** to every consumer.
+   2. **`customers` will hold a BCrypt `password_hash`.** CDC on that table would broadcast
+      every hash to the broker, durable on disk in RabbitMQ, readable by anything bound to
+      the exchange. **Not negotiable.**
+
+   ⚠️ **A VIEW cannot be used** — the original preference. Demonstrated live:
+   `ERROR: cannot add relation "v_public" to publication / not supported for views`.
+   Logical decoding reads the WAL, and a view generates no WAL — it is a stored query, not
+   stored data. Only real tables produce row changes.
+
+   **Four things found by running it, none obvious from documentation:**
+   - **The RabbitMQ sink does not create the exchange.** It dies with `NOT_FOUND` if one is
+     missing. The consumer should declare it, the way notification's `Topology` already
+     declares `quickpay.events`.
+   - **`routingKeyFromTopicName` is required**, or the routing key is empty and a topic
+     exchange can only be bound with `#`.
+   - **`${routedByValue}` in an env var collides with Quarkus config expansion.** Debezium
+     Server runs on Quarkus, which resolves `${...}` itself, yielding null and a bare
+     `NullPointerException` at bean creation with no useful message. Leave
+     `route.topic.replacement` unset and let Debezium apply its own default.
+   - **`schemas.enable=false` plus `expand.json.payload=true`** are both needed, or the
+     consumer receives a Kafka Connect envelope wrapping a double-encoded JSON string.
+
+   🔴 **AND IT LOST AN EVENT DURING SETUP — the finding worth keeping.** An insert made while
+   the exchange was missing was read from the WAL, failed to publish, crashed the engine, and
+   was skipped on restart. **That is S08 on a new axis:** *read from the WAL ≠ delivered to a
+   consumer.* And it is **worse than the outbox-with-relay**, where an unsent row sits in the
+   table with `sent_at IS NULL` and stays replayable forever. A passed WAL position is gone
+   unless the whole table is re-snapshotted.
+
+   ⚠️ **New failure mode this introduces — a replication slot pins the WAL.** If Debezium
+   stops while the database keeps writing, Postgres cannot recycle WAL segments the slot still
+   needs. `pg_wal` grows until the disk fills and **the database stops accepting writes**.
+   Stopping an ordinary consumer causes a backlog; stopping this one can take the database
+   down. Watch it with:
+   ```sql
+   select slot_name, active,
+          pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn))
+   from pg_replication_slots;
+   ```
+   **Candidate sabotage scenario S13**, and a genuinely different shape from anything Phase 7
+   found.
+
+   ---
+
+   ### 🔻 VERDICT AFTER BUILDING IT — 2026-09-13: **use the relay outbox, not CDC.**
+
+   **On this project's requirements the relay outbox is the better engineering choice, and
+   CDC exists here to have learned the difference.** Anyone reading this decision should not
+   copy CDC into a system that did not need it.
+
+   **What CDC genuinely wins**, and it is more than first assumed:
+   - **Lower latency.** The relay is `findTop100By…` on a `@Scheduled(fixedDelay)`, so mean
+     latency is about half the poll interval, forever. CDC is pushed off the WAL.
+   - **No throughput ceiling.** S07b measured the relay's real ceiling at **50 events/sec**
+     (100 rows every 2 s) — a limit only visible once the scheduler blocking was fixed.
+   - **No idle cost.** The relay polls all night whether or not anything happened.
+   - **No relay to get wrong.** That code has bitten twice already: S07 (stopped 39.3 s
+     sharing a scheduler thread) and S08 (marked `sent_at` on messages the broker discarded).
+   - **It sees writes the application did not make** — a DBA's `UPDATE`, a batch job.
+
+   **Why it still loses here:**
+   - ⚠️ **Pointing CDC at an outbox table throws away its main advantage.** You capture only
+     what your own code deliberately wrote — the same scope as the relay. The decoupling was
+     bought back by paying the benefit away.
+   - **Four config landmines in one session**, none documented obviously: the sink does not
+     create the exchange; `routingKeyFromTopicName` or the routing key is empty;
+     `${routedByValue}` collides with Quarkus config expansion and dies as a bare NPE;
+     `schemas.enable=false` **and** `expand.json.payload=true` are both required.
+   - **It lost an event during setup**, unrecoverably.
+   - **It introduces a way to take the database down** that the relay simply does not have —
+     a stalled slot fills the disk.
+   - **No per-event delivery signal in the application.** ⚠️ Though note S08 proved `sent_at`
+     was never one either: the relay marked it while RabbitMQ silently discarded three
+     messages. *The only thing that ever told the truth is the S10 set difference* —
+     publisher-recorded events MINUS consumer-processed events — and that works for both
+     designs, because `processed_events.message_id` is the outbox `event_id`.
+
+   **CDC earns its keep when you cannot change the writer** — a legacy application, a
+   third-party system, a database many services write to. There, "no application code" is not
+   a nicety, it is the only option. That is not this system.
+
+   **Consequences of the reversal:**
+   - customer-service publishes through a **relay reading `customer_outbox`**, the same
+     pattern as wallet and bill. `spring-boot-starter-amqp` is back in its pom.
+   - `customer_outbox` **needs a `sent_at` column after all** — there is a relay again, and
+     something must mark what it published. V1 had not been applied, so it is edited in place
+     rather than superseded (ADR-0003 binds only once a migration has run).
+   - The Debezium service is **kept behind a compose profile** (`--profile cdc`) so the
+     working configuration survives as a reference, and its replication slot was dropped so
+     it stops pinning WAL.
+   - ⚠️ **The relay brings back the two failure modes Phase 7 already measured**, and they
+     must not be re-learned: set `spring.task.scheduling.pool.size` before adding a second
+     `@Scheduled` job (S07), and remember `sent_at` means *handed to the broker*, not
+     *delivered* (S08).
+
 ---
 
 ## 6. Remaining work — ordered increments
@@ -1692,6 +2149,70 @@ manual run proved the sequential case only — the concurrent race is test #7's 
 - [ ] *(optional, later)* Wiremock tests for the two HTTP clients to close this gap
 
 ### Small deferred refinements
+- [ ] 🔴 **The EOD sweep has no terminal state — a permanently-unresolvable bill retries
+  forever.** Found 20 Sep by *reading* `EODReconciliationJob`, while designing customer
+  close. The sweep selects every `Reserved` bill, calls `billService.resolve`, and on failure
+  does `catch (Exception e) { logger.error(...) }` — **the bill stays `Reserved`**. At
+  `bill.eod-interval-ms:60000` that is **1,440 identical error lines per day, indefinitely**,
+  with no state change, no cap and no escalation.
+  **Customer close is what will trigger it.** Closing a customer closes their wallets;
+  `transfer` rejects a non-`Active` wallet on *either* side; so a hold stranded in Suspense
+  can never be reversed and the sweep can never succeed. ⚠️ **Ops has no signal** — the line
+  is indistinguishable from a transient biller error.
+  **Fix shape:** a bill status meaning *"human required"*, so the sweep stops selecting it and
+  something can count them. Same family as **S10's "budget before counter"** — a retry that
+  cannot succeed is not a retry. *(Accepted for now: recorded 20 Sep rather than fixed,
+  because it is bill-service scope inside a customer-service increment.)*
+- [ ] 🔴 **Outbox pruning + a relay-lag metric.** No longer housekeeping — the wallet relay
+  sat 1.5M rows behind for twelve days and nothing noticed (see the Phase 8 gap above).
+  Unsent count and oldest-unsent age are a single query. Applies to **all three** outbox
+  tables: `wallet.outbox_notification`, bill's, and `customer_outbox`.
+- [ ] 🔒 **`/v1/login` is an account-enumeration oracle — for Phase 9 A05.** Found 21 Sep while
+  testing closure. The status code distinguishes live accounts:
+  `existing + ACTIVE + wrong password -> 400` · `CLOSED -> 403` · `nonexistent email -> 403`.
+  Closed and nonexistent are indistinguishable from each other (both take the empty-`Optional`
+  path in `findByEmailAndStatus`) — that part is accidentally safe — but **"is this an active
+  account" separates cleanly**, which is exactly what an attacker enumerates. The 403 also
+  echoes the submitted email back in `detail`.
+- [ ] **Close has no 404 arm** — `closeWalletByWalletNumber` maps 400 to balance-not-zero but
+  nothing to 404, so a wallet that vanished between the list call and the close gives a 500.
+  Unreachable in practice; recorded rather than fixed.
+- [ ] ⚠️ **Test fixture to remember:** wallet `025100000002` (cif `0000000013`) was left
+  **Suspended** by the 21 Sep closure test, so that customer can never close. Correct
+  behaviour, confusing later — unsuspend it or leave this line as the explanation.
+- [ ] **"Log out everywhere"** — `deleteByCif` exists and is unused; needs `@Transactional`
+  (derived deletes are **not** transactional by default — `deleteById` is, which is the
+  entire difference between the two) plus an endpoint. **Earned by measurement 19 Sep:**
+  one customer held 5 concurrent sessions after a day of testing; logout kills one.
+- [ ] **Expired sessions are never pruned.** Filtered out by
+  `findByTokenHashAndExpiresAtAfter`, so they are harmless — but the table only grows.
+- [ ] **🔒 Phase 9 (security pass) — Step 0 STARTED, parked 19 Sep.**
+  `docs/security/THREAT_MODEL.md` holds the measured inventory (§1) and 15 open questions
+  (§2–§6) awaiting the human's answers, plus **six reviewer challenges to the plan itself**
+  (§7). Headline from the inventory: **of 26 HTTP endpoints, one service authenticates a
+  human and one endpoint verifies a machine**; ten money endpoints have no notion of a
+  caller. Also closed before being asked: **actuator is not a dependency anywhere**, and the
+  entire SQL surface is **three native queries**, none interpolating input.
+  ⚠️ **A01 is gated on block/close, not on increment 5** — "time-to-dead after `BLOCKED`"
+  cannot be measured while nothing can set that status. Hard stop for Phase 9: **24 Oct**.
+- [ ] ⚠️ **`ledger.debited_wallet_number` and `credited_wallet_number` are unindexed.**
+  Found 19 Sep while adding `idx_wallet_cif` (V20) — that index is the *only* one in the
+  whole wallet schema besides primary keys and the `idempotency_key` unique. So
+  `findDriftedWallets` runs two correlated subqueries against those columns, per wallet row,
+  over ~970,000 ledger rows. **That is the golden-rule check every sabotage scenario ends
+  with**, and it gets slower every run. Measure it before indexing — the number is the point.
+- [ ] `V20` used plain `CREATE INDEX`, correct at this table size. Noted for the future:
+  the production form is `CREATE INDEX CONCURRENTLY`, which **cannot run inside a
+  transaction** — Flyway wraps migrations in one, so it needs
+  `-- flyway:executeInTransaction=false` and gives up atomicity (a failed build leaves an
+  invalid index to drop by hand).
+- [ ] `WalletNotFoundException` in customer-service and the commented-out
+  `getWalletByWalletNumber` in its `WalletClient` are both dead — **kept deliberately**
+  (decided 19 Sep). The commented block references constructors that no longer exist, so
+  it is a sketch, not a spare part.
+- [ ] `@RequestAttribute` is required by default, so a missing cif raises a binding failure
+  that surfaces as **400** — the wrong signal, since it would mean the filter did not run
+  (our bug, not the caller's). Unreachable today because `publicURLs` denies by default.
 - [ ] Bill NOT_FOUND age policy: pending > 24h → reverse + raise ops ticket (not built;
   an unused `LocalDateTime` import in `EODReconciliationJob` marks the spot)
 - [ ] "OPS ticket" is currently just a log line
@@ -1815,6 +2336,11 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-09-24 | **INCREMENT 6 — the cif threaded BFF → bill → wallet; the payment path is whole.** `POST /v1/me/pay` (cif from `@RequestAttribute`, `Idempotency-Key` required) → `BillClient` → `/bill/reserve` (`PaymentRequest` gains cif) → persisted on the `Bill` (V4, option B — so the EOD sweep can one day assert too) → `walletClient.reserve(…, bill.getCif(), …)` → wallet `/hold` → **5A ownership check fires on a cif that came from the session, not the response.** The old bottom-up `bill.setCif(response.cif())` is gone; the cif now flows top-down, the inversion ADR-0006 called for. Measured E2E, 2/4 predicted: happy path **200, money customer→suspense→biller, bill Paid** ✅; missing `Idempotency-Key` **400** ✅; forged wallet — **money safe (5A refused, forged wallet untouched, golden rule held)** but the status reaching the phone was **503, not 403** — see 🔴 finding below. **Two DTOs in customer-service**, deliberately: the inbound `PaymentRequest` (no cif — the phone can't name an owner) and the outbound `BillPaymentRequest` (cif added in the controller from the session). One new exception: `BillUnavailableException` → 503 (5xx/timeout); a 400 from bill is the BFF's own bug → generic 500, no bespoke class. bill's `status` relayed as a **String**, not a mirrored enum — customer-service does not co-own bill's vocabulary. ⚠️ **Bug found and fixed mid-test:** all four wallet-service cif `@Pattern`s were the *national-id* regex `^[12]…` instead of the cif `^0…` — so **every** valid cif was rejected at wallet validation before 5A ran; the forged-wallet test first "passed" for the wrong reason (validation, not ownership). Same regex slip the human had already fixed in bill's DTOs. Both suites green after: bill 7/7, wallet 8/8 (both had `createPayment`/`transfer` call sites updated for the new cif arg). 🔴 **Finding `docs/security/A04b-*`: an authorization refusal degrades to "try again" across three hops** — wallet 403 → bill maps to `CifMismatchException`/500 → BFF maps 5xx→503. Each translation is defensible alone; composed, a permission denial reaches the customer as an outage, which invites infinite retry and hides the attack in monitoring. Recorded, not fixed — money was never at risk; it is a correctness-of-signal bug. ⚠️ Still open: `seed.sh` now breaks on the stricter `CreateWalletRequest` cif pattern (scaffolding, to fix). |
+| 2026-09-24 | **PHASE 9 CLOSE-OUT — Gate 1 CLOSED, auth finished to minimum honest scope.** Sponsor decision: auth's remaining learning yield was low, so the minimum was built and the rest closed *by decision, with the hole measured*. **BUILT — increment 5A**, the ownership check on the money path: a nullable `OwnershipAssertion(cif, walletNumber)` verified in `WalletService.transfer` right after `lockOrThrow`, against the already-locked row (zero extra queries). Per-operation target (debited for transfer/withdraw/hold, **credited** for top-up, `null` for settle/revers). Three distinct exceptions so a caller bug (500) never hides inside an ownership denial (403). **A04 measured, predictions locked first, 4/4 correct:** the 23 Sep no-credential transfer between two customers' wallets returned **200 and moved money with every invariant intact** (golden rule holds, both parties notified — a *perfect* theft); after 5A, forged cif → **403**, no cif → **400**, and the honest pair with **no credential → still 200**. That last 200 *is* the finding: **5A proves ownership, not authentication** — the cif is not a secret, so any caller naming the true owner still moves the money. **DEFERRED by decision — 5B (per-service secrets + scope map)**, demonstrated open at a second endpoint (uncredentialed `hold`+`settle` → 200); **step-up auth** recorded as a paragraph in ADR-0006, no ADR-0007. Security pass reduced to `docs/security/THREAT_MODEL.md` + `ASVS-L1.md` (**56/90**, gap concentrated in V2/V14 = the deferred decisions) + the `A04` record; no other scenario builds. The check **fails closed** — 8 integration tests seeded with a null cif all threw 403 until given the real owner; over-strict, never over-permissive. ADR-0006 gained a "Built vs deferred" section. ⚠️ Recorded, not fixed: the 403 body names the wallet (enumeration leak, same as `/me` had); `/login` distinguishes live accounts by status (A05); `CreateWalletRequest` still has no cif `@Pattern`. **Gate 1 closed = every control understood and decided, NOT production-ready:** 5B hole is real and 8080 is host-reachable. NEXT ACTION → increment 6 (thread the cif BFF → bill → wallet so `hold`'s assertion carries a real owner), or wrap `feat/customer-service` to `main`. |
+| 2026-09-16 | **Customer service registers and publishes; nothing consumes yet.** Increment 1 plus the relay, on `feat/customer-service`. **The customer lifecycle is enforced by constraints, not code** — `ck_cif_format` / `ck_national_id_format` keep the two 10-character identifiers disjoint by *format* rather than width (resizing would have meant rewriting **970,358 ledger rows** across two services), and three **partial** unique indexes `WHERE status <> 'CLOSED'` are what let a closed customer return with the same email and phone while the old row survives for audit. The cif sequence is capped at 999,999,999 because past that the padding yields a value that both violates the format *and* looks like a national id. **A second queue** `notification.customer-events` bound `customer.*` — justified by it being a *replication* event with a different consumer, **not** by head-of-line blocking, so the 3 Sep decision stands and flood remains unrun. ⚠️ **Measured, and the point of the exercise: `mandatory` does not mean delivered.** Bound queue, no consumer → **zero UNROUTABLE lines**, depth **6**, every outbox row `sent_at = t`, replica empty. Three failure modes, only one visible to the callback. Three Phase 7 findings applied *before* the code existed rather than rediscovered — `scheduling.pool.size` (S07), `mandatory` + returns callback (S08), `messageId` = `event_id` for dedup (S12). Review rounds were still spent on failures this project has seen before: a swallowed catch breaking the outbox's both-or-neither guarantee, missing `@Valid`/`@RequestBody` turning a bad national id into a 500, and a `Queue` parameter name silently binding `customer.*` to the wrong queue. NEXT ACTION → the consumer. |
+| 2026-09-12..13 | **Auth DESIGNED (ADR-0006) and four decisions taken.** The BFF authenticates the human; the wallet authenticates the *service* and verifies the asserted cif owns the named wallet — an ownership check that costs **zero extra queries**, because `lockOrThrow` already loads that row. Rejected: forwarding the session for the wallet to validate (a synchronous call on the money path — the coupling S10 refused). Deferred: token exchange (RFC 8693), with a named trigger. **Decision 6** made service #4 a customer service and dropped history; **7** parked Kafka and an archive/DWH; **8** recorded the auth design; **9** built CDC via Debezium → RabbitMQ, measured it, and **reversed to the relay outbox** — the verdict is in the decision so nobody copies CDC into a system that did not need it. CDC lost an event during setup, unrecoverably: *read from the WAL ≠ delivered*, S08 on a new axis, and **worse** than the relay, where an unsent row stays replayable. Full detail in section 5 and `adr/0006-*`. |
+| 2026-09-10 | **PHASE 8 COMPLETE — see the NEXT ACTION block and `docs/load/PHASE8_REPORT.md`.** P2P sustains **~1560 req/s** against a 500 TPS requirement (3.1× over), zero errors and zero drift across ~929,000 transfers. The bottleneck **moved three times** as each was relieved — both tiers CPU, then the connection pool, then the database. ⚠️ The most useful result is negative: raising the pool at the shipped configuration made throughput **11% worse**, while the identical change bought +8.8% once CPU was relieved. *Right fix, wrong constraint.* `application.yml` unchanged deliberately — a system 3.1× over target does not need tuning. Also found live: all four `WalletController` path-variable endpoints returned 500, fixed the same day. |
 | 2026-09-09 | **MERGED TO MAIN — PR #6, 81 commits.** The first merge since 23 August; `main` had been a month-stale description of the project. **CI was red for nine days and nobody knew:** the workflow triggered only on `push: [main]` and `pull_request`, so feature-branch pushes never ran the tests. The build broke on 31 Aug (a test mock stubbing `walletClient.hold()` with the old `TransferResponse` return type) and again on 5 Sep (`BillerResult` gained the `reference` component in S03), and stayed broken until this PR became the first thing to actually compile the tests. **Only compilation was ever wrong — all 15 tests pass** — so the entire cost was archaeology. Fixed the trigger to `branches: ['**']` with a concurrency group, fixed the mocks, and added a **root README** (the repo had READMEs for two simulators and for `docs/sabotage/` but none explaining what QuickPay is). ⚠️ **Review point worth keeping:** the first pass at the mock fix compiled and went green while putting `"BILR-1"` in `reference` and the wallet's `entryId` in `billerTxnId` — `resolve()` reads neither field, so the error was invisible to all 7 tests. Corrected. *A green test can still document a false contract.* Branch hygiene: four merged branches deleted, `docs/adr-and-learning-docs` kept local as decided. NEXT ACTION → **Phase 8 (k6)**, needs a written breaking-TPS prediction first. |
 | 2026-09-09 | **S12 — duplicate, and PHASE 7 IS COMPLETE (12 scenarios).** The category with zero prior coverage, attacked at four seams with 20 concurrent duplicate requests. **Money held perfectly to the digit**: ledger +6 rows exactly, both balances exactly as arithmetic predicts, zero drift, not one double charge. 🟢 **The project's thesis measured directly** — in the races, every code-level check caught **0 of 10** (all ten passed `existsByIdempotencyKey`'s check-then-act window) while the DB constraints caught **9 of 9**. Code checks are latency optimisations; the constraints are the guarantee. 🔴 **The finding:** ten concurrent settles on one hold produced nine `400 insufficient balance` — **neither guard built for this fired.** Not the discharge check (all ten passed it), not `uq_entry_discharged_once` (never reached). What stopped them was the **suspense account running out of money**. Money safe, diagnosis actively misleading, and **state-dependent**: with more money in suspense the same fault would report 409. *The invariant that protects the money is not the one that explains it.* Also: the two duplicate paths return different bodies under the same 409. **Open design question recorded — reject vs replay:** the wallet rejects a duplicate, so a client that timed out still cannot learn whether its money moved. NEXT ACTION → Phase 8 (k6 load test, needs a written breaking-TPS prediction), or the optional extras. |
 | 2026-09-08 | **S11a — the biller enforces the settlement window; S09's divergence is gone.** Gave the biller the same 60 s number; past it, it refuses and stores nothing, so `inquire` returns `NOT_FOUND` and the existing `resolve` reverts. Same setup as S09 — biller decides at T+90 — and the only digit that changed is the one that matters: `biller_settled` **1 → 0**. Bill `Rejected`, customer refunded and notified, biller holds no record. **No application code was touched:** `resolve`, the sweep, the wallet and the window value are byte-identical to S09. A one-sided timeout became a two-sided contract and the loss vanished. First run in the project where "the golden rule held" is checked **externally** as well as internally — platform-paid 0, biller-received 0, **difference 0 SAR**. S09's prediction 3 (*"if the biller sticks with the agreement then yes it will hold"*) is finally **confirmed**; it took two scenarios because S09's biller had never heard of the agreement. ⚠️ **Still open, raised by the learner:** the contract has a number but **no anchor** — the bill service measures from `bill.created_at`, the biller from request arrival, so its window closes strictly later and both can honour "60 s" while disagreeing. The real fix is `expiresAt` **transmitted in the pay request** (one clock, one anchor) — application code, not scaffolding. Reviewer error recorded: the first attempt used `delayMs`, which slows `inquire` too, stranding the bill and reproducing S01/S04 instead; fixed by making `timeoutSleepMs` runtime-settable. NEXT ACTION → S11b or S11c. |

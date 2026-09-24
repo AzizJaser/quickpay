@@ -183,4 +183,36 @@ public class GlobalExceptionHandler {
         problem.setProperty("dischargeType", e.getDischargerType());
         return problem;
     }
+
+    @ExceptionHandler(WalletBalanceIsNotZeroException.class)
+    public ProblemDetail handlerWalletBalanceIsNotZeroException(WalletBalanceIsNotZeroException e){
+        logger.warn("wallet with number {} can not be close because balance is not zero",e.getWalletNumber());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST, e.getMessage());
+        problem.setTitle("wallet cannot be close, balance is not zero ");
+        problem.setDetail(e.getMessage());
+//        problem.setProperty("holdEntryId",e.getHoldEntryId());
+//        problem.setProperty("dischargedByEntryId", e.getDischargedByEntryId());
+//        problem.setProperty("dischargeType", e.getDischargerType());
+        return problem;
+    }
+    @ExceptionHandler(WalletCifOwnershipConflictException.class)
+    public ProblemDetail handlerWalletCifOwnershipConflictException(WalletCifOwnershipConflictException e){
+        logger.warn("wallet with number {} doesn't belong to cif {}",e.getWalletNumber(),e.getCif());
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.FORBIDDEN, e.getMessage());
+        problem.setTitle("wallet doesn't belong ot the provided cif ");
+        problem.setDetail(e.getMessage());
+        return problem;
+    }
+
+    @ExceptionHandler(WalletAssertionMismatchException.class)
+    public ProblemDetail handlerWalletAssertionMismatchException(WalletAssertionMismatchException e){
+        logger.warn("you asserted on a wallet not in this transfer");
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+        problem.setTitle("error with asserted wallets");
+        problem.setDetail(e.getMessage());
+        return problem;
+    }
 }

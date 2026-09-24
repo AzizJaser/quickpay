@@ -33,5 +33,12 @@ public interface WalletRepository extends JpaRepository<Wallet,String> {
     List<Wallet> findDriftedWallets();
 
 
+    @Query(nativeQuery = true, value = """
+      SELECT * FROM wallet w
+      WHERE w.cif = :cif
+            and w.is_internal = false
+            order by w.created_at asc
+      """)
+    List<Wallet> findWalletsByCif(@Param("cif") String cif); //findByCifAndInternalFalse works too, but let's practice SQL
 
 }
