@@ -32,10 +32,13 @@ if ! curl -sf --max-time 3 "$BASE/actuator/health" >/dev/null 2>&1; then
 fi
 
 created=()
+cifs=()
 for i in $(seq 1 "$COUNT"); do
-  # cif must be exactly 10 chars (@Size(min=10,max=10)); 88 prefix keeps the load-test
-  # pool visually distinct from hand-made wallets in the database.
-  cif=$(printf "88%08d" "$i")
+  # cif must match ^0[0-9]{9}$ (CreateWalletRequest @Pattern, added with increment 5A) —
+  # a cif STARTS WITH 0. The old "88" prefix violated that and now 400s. "08" keeps the
+  # load-test pool visually distinct from hand-made wallets while conforming: 0800000001…
+  # (The wallet table has no FK to customers, so a load cif needs no matching customer row.)
+  cif=$(printf "08%08d" "$i")
   body=$(curl -s -X POST "$BASE/v1/wallets" \
       -H 'Content-Type: application/json' \
       -d "{\"cif\":\"$cif\",\"walletName\":\"LOAD-$i\"}")
@@ -45,6 +48,7 @@ for i in $(seq 1 "$COUNT"); do
     exit 1
   fi
   created+=("$wn")
+  cifs+=("$cif")      # parallel to created[] — the funding loop needs each wallet's owner
   [ $((i % 25)) -eq 0 ] && echo "  created $i/$COUNT"
 done
 
@@ -54,24 +58,35 @@ done
 # not depend on an endpoint whose behaviour is in question; that is a separate finding.
 echo "activating..."
 docker exec quickpay-wallet-db psql -U wallet -d wallet -q -c \
-  "update wallet set status='Active' where cif like '88%' and status <> 'Active';"
+  "update wallet set status='Active' where cif like '08%' and status <> 'Active';"
 
 # Fund through the REAL top-up endpoint, never by UPDATEing balances directly. A direct
 # balance write would create money with no ledger row, drift every wallet, and poison the
 # golden-rule check that every Phase 7 scenario depends on.
+#
+# top-up now carries a cif (increment 5A): TopUpRequest requires it, and the wallet asserts
+# the cif owns the CREDITED (topped-up) wallet. So each call must send that wallet's own cif —
+# cifs[] is kept parallel to created[] for exactly this.
 echo "funding $FUND each..."
 n=0
-for wn in "${created[@]}"; do
+for idx in "${!created[@]}"; do
+  wn="${created[$idx]}"
+  cif="${cifs[$idx]}"
   n=$((n + 1))
   curl -s -o /dev/null -X POST "$BASE/v1/transfer/top-up" \
     -H 'Content-Type: application/json' \
     -H "Idempotency-Key: seed-$(date +%s)-$wn" \
-    -d "{\"walletNumber\":\"$wn\",\"amount\":$FUND}"
+    -d "{\"cif\":\"$cif\",\"walletNumber\":\"$wn\",\"amount\":$FUND}"
   [ $((n % 25)) -eq 0 ] && echo "  funded $n/$COUNT"
 done
 
+# wallets.json now carries {walletNumber, cif} pairs, not bare numbers: since increment 5A,
+# a transfer must assert the debited wallet's owner, so the k6 scripts need each wallet's cif.
 printf '[\n' > "$OUT"
-printf '  "%s",\n' "${created[@]}" | sed '$ s/,$//' >> "$OUT"
+for idx in "${!created[@]}"; do
+  sep=","; [ "$idx" -eq $(( ${#created[@]} - 1 )) ] && sep=""
+  printf '  {"walletNumber":"%s","cif":"%s"}%s\n' "${created[$idx]}" "${cifs[$idx]}" "$sep" >> "$OUT"
+done
 printf ']\n' >> "$OUT"
 
 echo "wrote $OUT with ${#created[@]} wallets"

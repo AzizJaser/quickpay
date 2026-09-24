@@ -58,9 +58,11 @@ export default function () {
   const w = wallets[Math.floor(Math.random() * wallets.length)];
   const key = `${RUN}-${__VU}-${__ITER}`;
 
+  // wallets.json now holds {walletNumber, cif} pairs (increment 5A). top-up asserts the
+  // CREDITED (topped-up) wallet's owner, so send that wallet's own cif.
   const res = http.post(
     `${BASE}/v1/transfer/top-up`,
-    JSON.stringify({ walletNumber: w, amount: 1 }),
+    JSON.stringify({ cif: w.cif, walletNumber: w.walletNumber, amount: 1 }),
     {
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
       tags: { name: 'topup' },

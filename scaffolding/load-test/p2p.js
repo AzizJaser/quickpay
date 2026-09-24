@@ -84,11 +84,14 @@ export default function () {
   // so a repeat is a 409. VU + iteration is unique within a run; RUN keeps runs apart.
   const key = `${RUN}-${__VU}-${__ITER}`;
 
+  // wallets.json now holds {walletNumber, cif} pairs (increment 5A). betweenWallets asserts
+  // the DEBITED wallet's owner, so send that wallet's cif; the wallet 403s a mismatch.
   const res = http.post(
     `${BASE}/v1/transfer/betweenWallets`,
     JSON.stringify({
-      debitedWalletNumber: wallets[a],
-      creditedWalletNumber: wallets[b],
+      cif: wallets[a].cif,
+      debitedWalletNumber: wallets[a].walletNumber,
+      creditedWalletNumber: wallets[b].walletNumber,
       amount: 1,
     }),
     {
