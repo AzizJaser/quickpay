@@ -2,6 +2,7 @@ package com.quickpay.wallet;
 
 import com.quickpay.wallet.domain.LedgerEntry;
 import com.quickpay.wallet.domain.Wallet;
+import com.quickpay.wallet.dto.helper.OwnershipAssertion;
 import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.exception.DuplicatedEntryException;
 import com.quickpay.wallet.exception.EntryNotFoundException;
@@ -45,14 +46,14 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2000000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        walletService.topUp(A.getWallet_number(), 5000L, "Trx-conserves-01");
+        walletService.topUp(A.getWallet_number(), 5000L, "Trx-conserves-01",A.getCif());
 
         A = walletRepository.findByWalletNumber(A.getWallet_number()).orElseThrow();
         B = walletRepository.findByWalletNumber(B.getWallet_number()).orElseThrow();
         long totalBefore = A.getBalance() + B.getBalance();
 
         // -- ACT --
-        walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-conserves-02",null,null, TransactionType.TRANSFER);
+        walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-conserves-02",null,null, TransactionType.TRANSFER,new OwnershipAssertion("1000000000",A.getWallet_number()));
 
         // -- ASSERT --
         A = walletRepository.findByWalletNumber(A.getWallet_number()).orElseThrow();
@@ -69,14 +70,15 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2100000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        walletService.topUp(A.getWallet_number(), 1000L, "Trx-insufficient-01");
+        walletService.topUp(A.getWallet_number(), 1000L, "Trx-insufficient-01",A.getCif());
         long ledgerCount = ledgerEntryRepository.count();
 
         // -- ACT + ASSERT EXCEPTION --
         String aNumber = A.getWallet_number();
         String bNumber = B.getWallet_number();
+        String cif = A.getCif();
         assertThrows(InsufficientBalanceException.class,
-                () ->walletService.transfer(aNumber,bNumber,2000L, "Trx-insufficient-02",null,null, TransactionType.TRANSFER));
+                () ->walletService.transfer(aNumber,bNumber,2000L, "Trx-insufficient-02",null,null, TransactionType.TRANSFER,new OwnershipAssertion(cif,aNumber)));
 
         // -- ASSERT --
         A = walletRepository.findByWalletNumber(A.getWallet_number()).orElseThrow();
@@ -93,17 +95,18 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2110000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        walletService.topUp(A.getWallet_number(), 4000L, "Trx-duplicated-01");
+        walletService.topUp(A.getWallet_number(), 4000L, "Trx-duplicated-01",A.getCif());
 
         // -- ACT + EXCEPTION--
         A = walletRepository.findByWalletNumber(A.getWallet_number()).orElseThrow();
         B = walletRepository.findByWalletNumber(B.getWallet_number()).orElseThrow();
         String aNumber = A.getWallet_number();
         String bNumber = B.getWallet_number();
-        walletService.transfer(aNumber,bNumber,2000L, "Trx-duplicated-02",null,null, TransactionType.TRANSFER);
+        walletService.transfer(aNumber,bNumber,2000L, "Trx-duplicated-02",null,null, TransactionType.TRANSFER,new OwnershipAssertion(A.getCif(),aNumber));
         long ledgerCount = ledgerEntryRepository.count();
+        String cif = A.getCif();
         assertThrows(DuplicatedEntryException.class,
-                () ->walletService.transfer(aNumber,bNumber,2000L, "Trx-duplicated-02",null,null, TransactionType.TRANSFER));
+                () ->walletService.transfer(aNumber,bNumber,2000L, "Trx-duplicated-02",null,null, TransactionType.TRANSFER,new OwnershipAssertion(cif,aNumber)));
 
         // ASSERT
         A = walletRepository.findByWalletNumber(A.getWallet_number()).orElseThrow();
@@ -118,7 +121,7 @@ public class WalletServiceIntegrationTest {
         // -- ARRANGE --
         Wallet A = walletService.createWallet("1111000000","A");
         walletService.activateWallet(A.getWallet_number());
-        walletService.topUp(A.getWallet_number(), 5000L, "Trx-recon-01");
+        walletService.topUp(A.getWallet_number(), 5000L, "Trx-recon-01", A.getCif());
 
         // -- SABOTAGE --
         Wallet a = walletRepository.findByWalletNumber(A.getWallet_number()).orElseThrow();
@@ -140,10 +143,10 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2111000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-01");
+        walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-01",A.getCif());
 
         // -- ACT (HOLD AND REVERS) --
-        LedgerEntry entry = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-02",null,null, TransactionType.TRANSFER);
+        LedgerEntry entry = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-02",null,null, TransactionType.TRANSFER,new OwnershipAssertion(A.getCif(),A.getWallet_number()));
         walletService.revers(entry.getEntryId(),"Trx-REVERS-03");
 
 
@@ -161,7 +164,7 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2111100000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        LedgerEntry entryId = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-02");
+        LedgerEntry entryId = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-02",A.getCif());
 
         // -- ACT + THROW--
         assertThrows(EntryNotFoundException.class,
@@ -180,10 +183,10 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2111000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        LedgerEntry entry = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-03");
+        LedgerEntry entry = walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-03",A.getCif());
 
         // -- ACT (HOLD AND REVERS twice) --
-        LedgerEntry entry1 = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-03",null,null, TransactionType.TRANSFER);
+        LedgerEntry entry1 = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-03",null,null, TransactionType.TRANSFER,new OwnershipAssertion(A.getCif(),A.getWallet_number()));
         LedgerEntry entry2 = walletService.revers(entry1.getEntryId(),"Trx-REVERS-04");
         assertThrows(DuplicatedEntryException.class,
                 () -> walletService.revers(entry1.getEntryId(),"Trx-REVERS-04"));
@@ -203,10 +206,10 @@ public class WalletServiceIntegrationTest {
         Wallet B = walletService.createWallet("2111000000","B");
         walletService.activateWallet(A.getWallet_number());
         walletService.activateWallet(B.getWallet_number());
-        walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-04");
+        walletService.topUp(A.getWallet_number(), 4000L, "Trx-ToUp-B-04",A.getCif());
 
         // -- ACT (HOLD AND REVERS twice) --
-        LedgerEntry entry = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-04",null,null, TransactionType.TRANSFER);
+        LedgerEntry entry = walletService.transfer(A.getWallet_number(),B.getWallet_number(),2000L, "Trx-HOLD-04",null,null, TransactionType.TRANSFER,new OwnershipAssertion(A.getCif(),A.getWallet_number()));
         LedgerEntry entry2 = walletService.revers(entry.getEntryId(),"Trx-REVERS-05");
         assertThrows(InsufficientBalanceException.class,
                 () -> walletService.revers(entry.getEntryId(),"Trx-REVERS-06"));

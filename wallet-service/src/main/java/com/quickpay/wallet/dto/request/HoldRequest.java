@@ -6,6 +6,8 @@ import jakarta.validation.constraints.Positive;
 
 public record HoldRequest(
         @NotBlank
+        String cif,
+        @NotBlank
         String walletNumber,
         @NotNull
         @Positive

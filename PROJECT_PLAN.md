@@ -5,13 +5,13 @@
 > this file, then act. **Keep it updated** — when a milestone lands or a decision is
 > made, edit this file in the same commit.
 >
-> Last updated: **2026-09-22 (rev 23 — customer service #4: increments 1–4 COMPLETE + logout + account closure.
-> Revocation PROVEN. cif backfill applied — **increment 5 is UNBLOCKED**.
-> ⚠️ **PHASE 8 GAP FOUND 22 SEP: the outbox relay runs ~20× slower than the transfer path**
-> and sat 1.5M events behind for twelve days, undetected. Cleared; metric not yet built.
-> Phase 9 security pass: threat model started, parked. Sessions,
-> login, session filter and the BFF's first wallet call all built and measured. Auth is now
-> half BUILT, half designed: the human is authenticated, the wallet-side ownership check
+> Last updated: **2026-09-24 (rev 24 — ✅ GATE 1 CLOSED. Auth finished to minimum honest scope:
+> 5A ownership check BUILT + measured (forged pair → 403, `A04`); 5B service-auth DEFERRED by
+> decision with the hole demonstrated; step-up auth recorded in ADR-0006. All three DoD gates
+> closed. Customer service #4: increments 1–4 + logout + account closure + cif backfill, all done.
+> ⚠️ Phase 8 gap (22 Sep): outbox relay ~20× slower than the transfer path; cleared, metric TODO.
+> ⚠️ Gate closed ≠ production-ready — 5B hole is real, 8080 host-reachable, no TLS in dev.
+> Sessions, login, filter, BFF wallet call all built and measured. The wallet-side ownership check
 > (increment 5) is not started. Phases 7 and 8 complete; 2 of 3 DoD gates closed.)**
 >
 > **State in one paragraph.** `main` holds the finished build — wallet, bill and notification
@@ -1589,15 +1589,22 @@ QuickPay is **done** when all three are true:
 
 | gate | state |
 |---|---|
-| 1 · seven business requirements | 🟡 **OPEN** — 5 done, **#6 closed out** by decisions-log entry 6, **#1 auth still open** |
+| 1 · seven business requirements | ✅ **CLOSED 24 Sep** — **authorization built** (5A, measured); **authentication delegated** to customer-service (sessions/login/logout, revocation proven); **service auth (5B) deferred by decision, hole on record**. #6 closed out (entry 6). See close-out below. |
 | 2 · sabotage log | ✅ **MET 9 Sep** — 14 runs, ~56% predicted, every surprise explained |
 | 3 · load report | ✅ **MET 10 Sep** — 1560 TPS, bottleneck named, +19.7% and one −11% |
 
-⚠️ **Two of three gates are closed. QuickPay is NOT done.** Gate 1 requires **auth** to be
-either built or explicitly closed out in the decisions log. It is now **in progress**, not
-deferred — decisions-log entry 6 gives it an owner (the customer service), and the plan's
-original justification for deferring it ("purely additive") was **withdrawn on 10 Sep** as
-false of authorization.
+✅ **ALL THREE GATES CLOSED, 24 Sep.** Gate 1 required auth to be **either built or explicitly
+closed out**. Both, in the honest split: the human is authenticated (customer-service BFF), the
+money path is authorized (5A ownership check, forged pair → 403, measured in
+`docs/security/A04-idor-money-path.md`), and the one unbuilt piece — **5B service-to-service
+auth** — is closed *by decision* with its hole demonstrated and documented, not left silent.
+That is exactly what Gate 1's "closed out" clause demands: a decision on the record, not a gap.
+
+⚠️ **Gate closure is not "production-ready."** 5B is a real hole (any caller naming the true
+cif moves money; 8080 is reachable from the host), TLS is absent by design in dev, and there
+is no rate limiting. These are **recorded, triggered decisions** (ADR-0006, `ASVS-L1.md`
+accepted-risk, `THREAT_MODEL.md` §6) — the finish line for a *learning* project, which is to
+understand and decide every control, not to ship one.
 
 **Adopting this definition does not declare the project finished.** It fixes the finish line
 so it cannot move — which is the entire point of writing one down.
@@ -1634,7 +1641,7 @@ Sponsor = a Riyadh fintech founder. Seven business requirements:
 
 | # | Requirement | Status |
 |---|---|---|
-| 1 | Accounts — customers hold a SAR wallet (thin auth) | 🟡 wallets ✅ · **auth DESIGNED 12 Sep** (ADR-0006), not yet built |
+| 1 | Accounts — customers hold a SAR wallet (thin auth) | ✅ **CLOSED 24 Sep** — wallets ✅ · authN delegated to customer-service (session/login/logout, revocation proven) · authZ built on the money path (5A, forged pair → 403) · **service auth 5B deferred by decision, hole measured** (`A04`, ADR-0006 close-out) |
 | 2 | Top-up via async gateway; callbacks may duplicate or never arrive | ✅ done (HMAC webhook + idempotency) |
 | 3 | P2P transfer, instant; app auto-retries after 5s | ✅ done (idempotency key makes retry safe) |
 | 4 | Bill payment via slow (≤60s) flaky biller; never lose customer money, never show "paid" falsely | ✅ **done 2026-07-01** |
@@ -2329,6 +2336,7 @@ docker exec quickpay-bill-db psql -U bill -d bill -c \
 
 | Date | Change |
 |---|---|
+| 2026-09-24 | **PHASE 9 CLOSE-OUT — Gate 1 CLOSED, auth finished to minimum honest scope.** Sponsor decision: auth's remaining learning yield was low, so the minimum was built and the rest closed *by decision, with the hole measured*. **BUILT — increment 5A**, the ownership check on the money path: a nullable `OwnershipAssertion(cif, walletNumber)` verified in `WalletService.transfer` right after `lockOrThrow`, against the already-locked row (zero extra queries). Per-operation target (debited for transfer/withdraw/hold, **credited** for top-up, `null` for settle/revers). Three distinct exceptions so a caller bug (500) never hides inside an ownership denial (403). **A04 measured, predictions locked first, 4/4 correct:** the 23 Sep no-credential transfer between two customers' wallets returned **200 and moved money with every invariant intact** (golden rule holds, both parties notified — a *perfect* theft); after 5A, forged cif → **403**, no cif → **400**, and the honest pair with **no credential → still 200**. That last 200 *is* the finding: **5A proves ownership, not authentication** — the cif is not a secret, so any caller naming the true owner still moves the money. **DEFERRED by decision — 5B (per-service secrets + scope map)**, demonstrated open at a second endpoint (uncredentialed `hold`+`settle` → 200); **step-up auth** recorded as a paragraph in ADR-0006, no ADR-0007. Security pass reduced to `docs/security/THREAT_MODEL.md` + `ASVS-L1.md` (**56/90**, gap concentrated in V2/V14 = the deferred decisions) + the `A04` record; no other scenario builds. The check **fails closed** — 8 integration tests seeded with a null cif all threw 403 until given the real owner; over-strict, never over-permissive. ADR-0006 gained a "Built vs deferred" section. ⚠️ Recorded, not fixed: the 403 body names the wallet (enumeration leak, same as `/me` had); `/login` distinguishes live accounts by status (A05); `CreateWalletRequest` still has no cif `@Pattern`. **Gate 1 closed = every control understood and decided, NOT production-ready:** 5B hole is real and 8080 is host-reachable. NEXT ACTION → increment 6 (thread the cif BFF → bill → wallet so `hold`'s assertion carries a real owner), or wrap `feat/customer-service` to `main`. |
 | 2026-09-16 | **Customer service registers and publishes; nothing consumes yet.** Increment 1 plus the relay, on `feat/customer-service`. **The customer lifecycle is enforced by constraints, not code** — `ck_cif_format` / `ck_national_id_format` keep the two 10-character identifiers disjoint by *format* rather than width (resizing would have meant rewriting **970,358 ledger rows** across two services), and three **partial** unique indexes `WHERE status <> 'CLOSED'` are what let a closed customer return with the same email and phone while the old row survives for audit. The cif sequence is capped at 999,999,999 because past that the padding yields a value that both violates the format *and* looks like a national id. **A second queue** `notification.customer-events` bound `customer.*` — justified by it being a *replication* event with a different consumer, **not** by head-of-line blocking, so the 3 Sep decision stands and flood remains unrun. ⚠️ **Measured, and the point of the exercise: `mandatory` does not mean delivered.** Bound queue, no consumer → **zero UNROUTABLE lines**, depth **6**, every outbox row `sent_at = t`, replica empty. Three failure modes, only one visible to the callback. Three Phase 7 findings applied *before* the code existed rather than rediscovered — `scheduling.pool.size` (S07), `mandatory` + returns callback (S08), `messageId` = `event_id` for dedup (S12). Review rounds were still spent on failures this project has seen before: a swallowed catch breaking the outbox's both-or-neither guarantee, missing `@Valid`/`@RequestBody` turning a bad national id into a 500, and a `Queue` parameter name silently binding `customer.*` to the wrong queue. NEXT ACTION → the consumer. |
 | 2026-09-12..13 | **Auth DESIGNED (ADR-0006) and four decisions taken.** The BFF authenticates the human; the wallet authenticates the *service* and verifies the asserted cif owns the named wallet — an ownership check that costs **zero extra queries**, because `lockOrThrow` already loads that row. Rejected: forwarding the session for the wallet to validate (a synchronous call on the money path — the coupling S10 refused). Deferred: token exchange (RFC 8693), with a named trigger. **Decision 6** made service #4 a customer service and dropped history; **7** parked Kafka and an archive/DWH; **8** recorded the auth design; **9** built CDC via Debezium → RabbitMQ, measured it, and **reversed to the relay outbox** — the verdict is in the decision so nobody copies CDC into a system that did not need it. CDC lost an event during setup, unrecoverably: *read from the WAL ≠ delivered*, S08 on a new axis, and **worse** than the relay, where an unsent row stays replayable. Full detail in section 5 and `adr/0006-*`. |
 | 2026-09-10 | **PHASE 8 COMPLETE — see the NEXT ACTION block and `docs/load/PHASE8_REPORT.md`.** P2P sustains **~1560 req/s** against a 500 TPS requirement (3.1× over), zero errors and zero drift across ~929,000 transfers. The bottleneck **moved three times** as each was relieved — both tiers CPU, then the connection pool, then the database. ⚠️ The most useful result is negative: raising the pool at the shipped configuration made throughput **11% worse**, while the identical change bought +8.8% once CPU was relieved. *Right fix, wrong constraint.* `application.yml` unchanged deliberately — a system 3.1× over target does not need tuning. Also found live: all four `WalletController` path-variable endpoints returned 500, fixed the same day. |

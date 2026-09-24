@@ -6,8 +6,8 @@ import com.quickpay.wallet.domain.LedgerEntry;
 import com.quickpay.wallet.domain.NotificationEvent;
 import com.quickpay.wallet.domain.Wallet;
 import com.quickpay.wallet.dto.event.MoneyMovedPayload;
+import com.quickpay.wallet.dto.helper.OwnershipAssertion;
 import com.quickpay.wallet.dto.response.HoldResponse;
-import com.quickpay.wallet.dto.response.WalletResponse;
 import com.quickpay.wallet.enums.TransactionType;
 import com.quickpay.wallet.enums.WalletStatus;
 import com.quickpay.wallet.exception.*;
@@ -15,6 +15,7 @@ import com.quickpay.wallet.repository.LedgerEntryRepository;
 import com.quickpay.wallet.repository.NotificationEventRepository;
 import com.quickpay.wallet.repository.WalletRepository;
 
+import jakarta.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,7 +56,7 @@ public class WalletService {
 
     // need to write the DTOs for this service
     @Transactional
-    public LedgerEntry transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey,String original_entry_id,String settles_entry_id, TransactionType transactionType){
+    public LedgerEntry transfer(String debitedWalletNumber, String creditedWalletNumber, Long amount, String idempotencyKey, String original_entry_id, String settles_entry_id, TransactionType transactionType, @Nullable OwnershipAssertion assertion){
 
         if(amount == null || amount <= 0) {
                 throw new InvalidAmountException("Unable to the transaction, amount is 0 or less");
@@ -78,6 +79,19 @@ public class WalletService {
         }else {
             creditedWallet = lockOrThrow(creditedWalletNumber);
             debitedWallet = lockOrThrow(debitedWalletNumber);
+        }
+        if(assertion != null){
+            if(debitedWallet.getWallet_number().equals(assertion.walletNumber())){
+                if(!debitedWallet.getCif().equals(assertion.cif())){
+                    throw new WalletCifOwnershipConflictException(assertion.cif(), assertion.walletNumber());
+                } // else that means the wallet belong to the cif
+            }else if(creditedWallet.getWallet_number().equals(assertion.walletNumber())){
+                if(!creditedWallet.getCif().equals(assertion.cif())){
+                    throw new WalletCifOwnershipConflictException(assertion.cif(), assertion.walletNumber());
+                }
+            } else {
+                throw new WalletAssertionMismatchException();
+            }
         }
         if(debitedWallet.getStatus() != WalletStatus.Active){
             throw new WalletNotActiveException("Wallet not active",debitedWalletNumber,debitedWallet.getStatus());
@@ -108,23 +122,23 @@ public class WalletService {
     }
 
     @Transactional
-    public LedgerEntry topUp(String wallet_number,Long amount,String idempotencyKey){
-        return transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey,null,null,TransactionType.DEPOSIT);
+    public LedgerEntry topUp(String wallet_number,Long amount,String idempotencyKey,String cif){
+        return transfer(INTERNAL_TRANSACTION_ACCOUNT,wallet_number,amount,idempotencyKey,null,null,TransactionType.DEPOSIT,new OwnershipAssertion(cif,wallet_number));
     }
     @Transactional
-    public LedgerEntry withdraw(String wallet_number,Long amount,String idempotencyKey){
-        return transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.WITHDRAWAL);
+    public LedgerEntry withdraw(String wallet_number,Long amount,String idempotencyKey,String cif){
+        return transfer(wallet_number,INTERNAL_OUTWARD_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.WITHDRAWAL,new OwnershipAssertion(cif,wallet_number));
     }
     @Transactional
     public LedgerEntry revers(String original_entry_id, String idempotencyKey){
         LedgerEntry entry = ledgerEntryRepository.findByEntryId(original_entry_id)
                 .orElseThrow(()-> new EntryNotFoundException(original_entry_id));
         TransactionType type = entry.getTransactionType() == TransactionType.HOLD ? TransactionType.RELEASE : TransactionType.REVERSAL;
-        return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id,null,type);
+        return transfer(entry.getCredited_wallet_number(),entry.getDebited_wallet_number(), entry.getCredited_amount(), idempotencyKey,original_entry_id,null,type,null);
     }
     @Transactional
-    public HoldResponse hold(String wallet_number, Long amount, String idempotencyKey){
-        LedgerEntry entry = transfer(wallet_number,SUSPENSE_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.HOLD);
+    public HoldResponse hold(String wallet_number, Long amount, String idempotencyKey,String cif){
+        LedgerEntry entry = transfer(wallet_number,SUSPENSE_ACCOUNT,amount,idempotencyKey,null,null,TransactionType.HOLD,new OwnershipAssertion(cif,wallet_number));
         return new HoldResponse(entry.getEntryId(),idempotencyKey,getCifByWalletNumber(wallet_number));
     }
 
@@ -139,7 +153,7 @@ public class WalletService {
                 LedgerEntry discharger = discharged.get();
                 throw new HoldAlreadyDischargedException(entryId, discharger.getEntryId(), discharger.getTransactionType());
             }
-            LedgerEntry settledEntry = transfer(SUSPENSE_ACCOUNT, BILLER_ACCOUNT, entry.getCredited_amount(), idempotencyKey,null,entryId,TransactionType.SETTLEMENT);
+            LedgerEntry settledEntry = transfer(SUSPENSE_ACCOUNT, BILLER_ACCOUNT, entry.getCredited_amount(), idempotencyKey,null,entryId,TransactionType.SETTLEMENT,null);
             return settledEntry;
         } else{
             throw new UnHoldTransactionException(entryId);

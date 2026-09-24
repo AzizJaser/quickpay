@@ -175,3 +175,82 @@ reachable only on the Docker network, which costs one line and makes the assumpt
 each gain a field. Every test that calls those endpoints with a bare wallet number must supply
 an owner — which is the friction the plan originally cited as a *reason to defer*. It is
 better read as the exercise: **15 integration tests currently authenticate as nobody.**
+
+---
+
+## Built vs deferred — Phase 9 close-out, 2026-09-24
+
+This ADR was written 12 Sep as a design. What follows is what was actually built, what was
+closed by decision, and the hole left on the record. The full measurement is
+`docs/security/A04-idor-money-path.md`.
+
+### ✅ BUILT — increment 5A: ownership on the money path
+
+A nullable `OwnershipAssertion(cif, walletNumber)` is checked in `WalletService.transfer`
+**immediately after `lockOrThrow`**, against the already-locked row — the "zero extra queries"
+claim above, now real. Which wallet is asserted differs per operation, because the customer's
+side of the entry does:
+
+| operation | asserts | why |
+|---|---|---|
+| `betweenWallets` | debited | the customer is paying |
+| `top-up` | **credited** | debited is the internal TopUp account |
+| `withdraw` | debited | credited is the internal Outward account |
+| `hold` | debited | (wired now; the cif only *flows* here in increment 6) |
+| `settle`, `revers` | `null` | scope-only — they name an entry, not a wallet; authority is inherited from the ownership-checked hold, and `uq_entry_discharged_once` makes discharge terminal |
+
+Three outcomes, three exceptions, deliberately distinct so a caller bug never hides inside a
+security denial:
+
+- cif ≠ wallet's owner → **403** `WalletCifOwnershipConflictException`
+- assertion names a wallet in neither side → **500** `WalletAssertionMismatchException` (a BFF
+  bug, not a refusal)
+- `null` assertion → proceeds (internal / scope-only calls)
+
+**Measured before and after** (A04, same wallets, predictions locked first):
+
+```
+23 Sep, no check:   forge any wallet, no cif        -> 200, money moved
+24 Sep, 5A:         forged cif                        -> 403
+                    no cif                            -> 400  (@NotBlank)
+                    honest cif, no service credential -> 200  <-- see below
+```
+
+The check **fails closed**: a `null` cif does not skip the check, it is rejected — proven when
+8 integration tests seeded with a null cif all threw 403 until given the real owner. Over-strict,
+never over-permissive. Golden rule held throughout: `sum(balance)=0`, zero drift.
+
+### ⛔ DEFERRED by decision — increment 5B: service-to-service authentication
+
+**The honest-pair test above returned 200 with no credential of any kind.** 5A proves the
+asserted cif *owns* the wallet; it does not prove the caller is *authorised to act for that
+cif*, and the cif is not a secret. Any caller who names the true owner moves the money.
+
+Demonstrated at a second endpoint to show it is systemic, not specific to transfer: an
+uncredentialed `hold` then `settle` **succeeded (200)**, moving 1 unit permanently into the
+Biller account. `settle` is scope-only by design, so it has no ownership check to lean on
+either — it is pure 5B surface.
+
+**5B (per-service static secret + the scope map in this ADR) is deferred.** Sponsor decision,
+Phase 9 close-out: auth's remaining learning yield was judged low against the cost. **The hole
+is documented, not hidden** — this is the close-out clause requirement #1 always carried. Its
+only current mitigation is network position, which `docker-compose` does **not** enforce (8080
+is published to the host). Named trigger to build it: a second caller of the wallet, or the
+BFF ceasing to be the only door.
+
+### ⛔ DEFERRED by decision — step-up auth (was to be ADR-0007)
+
+Recorded here as a paragraph rather than its own ADR, per the same close-out. **A session grants
+reads; money movement should require a second factor** (a transaction PIN, or an OTP via a
+scaffolding simulator). This is the real answer to a stolen session (see A01's blast-radius
+finding: logout kills one session, a leaked token's other sessions survive). Full design,
+zero build. Trigger to revisit: any real deployment, or the first fraud signal.
+
+### Known refinements left open (small, on the record)
+
+- **The 403 body names the wallet** — *"Wallet number X doesn't belong to cif Y"* — confirming
+  the wallet exists. Tolerable while the caller is the BFF (inside the trust boundary), but the
+  same enumeration leak scrubbed from `/me/wallets`. Make `super()` generic; the specifics are
+  already in `logger.warn`.
+- **Internal-wallet naming** (Suspense/TopUp) and **lock-vs-check ordering** remain as first
+  written above.
