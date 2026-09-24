@@ -50,7 +50,7 @@ public class BillServiceIntegrationTest {
     public void createPayment_replaySameKey_returnsRecord(){
         // ACT — record the intent. This is the write-ahead step: it should persist a
         // Pending bill and commit, WITHOUT touching the wallet or the biller.
-        Bill bill = billService.createPayment("BILL-REF-01", "000000000001", 100L, "IDMP-KEY-01");
+        Bill bill = billService.createPayment("BILL-REF-01", "000000000001", 100L, "0000000001","IDMP-KEY-01");
 
         // --- ASSERT: the record the service handed back ---
 
@@ -87,11 +87,11 @@ public class BillServiceIntegrationTest {
     @Test
     public void createPayment_replaySameKey_returnsSameRecord() {
         // ARRANGE
-        Bill firstBill = billService.createPayment("BILL-REF-03", "000000000001", 100L, "IDM-KEY-02");
+        Bill firstBill = billService.createPayment("BILL-REF-03", "000000000001", 100L,"0000000001" ,"IDM-KEY-02");
         long countBefore = billRepository.count();
 
         // ACT
-        Bill secondBill = billService.createPayment("BILL-REF-03", "000000000001", 999L, "IDM-KEY-02");
+        Bill secondBill = billService.createPayment("BILL-REF-03", "000000000001", 999L, "0000000001","IDM-KEY-02");
 
         //ASSERT
         assertEquals(secondBill.getPaymentId(),firstBill.getPaymentId());
@@ -105,8 +105,8 @@ public class BillServiceIntegrationTest {
     public void reserveFunds_walletAccepts_marksReserved(){
 
         // ARRANGE
-        Bill bill = billService.createPayment("BILL-REF-02", "000000000001", 100L, "IDMP-KEY-03");
-        when(walletClient.reserve(anyString(), anyLong(), anyString())).thenReturn(new HoldResponse("ENTRY-123","rABC","0000000001"));
+        Bill bill = billService.createPayment("BILL-REF-02", "000000000001", 100L, "0000000001","IDMP-KEY-03");
+        when(walletClient.reserve(anyString(), anyLong(), anyString(),anyString())).thenReturn(new HoldResponse("ENTRY-123","rABC","0000000001"));
 
         // ACT
         Bill reserved = billService.reserveFunds(bill);
@@ -120,7 +120,7 @@ public class BillServiceIntegrationTest {
 
         // ASSERT Interaction
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
-        verify(walletClient).reserve(eq(bill.getWalletNumber()),eq(bill.getAmount()),eq(reserveKey));
+        verify(walletClient).reserve(eq(bill.getWalletNumber()),eq(bill.getAmount()),eq(bill.getCif()),eq(reserveKey));
         verifyNoInteractions(billerClient);
 
     }
@@ -128,10 +128,10 @@ public class BillServiceIntegrationTest {
     @Test
     public void reserveFunds_walletDeclines_marksRejected(){
         // ARRANGE
-        Bill bill = billService.createPayment("BILL-REF-04","000000000001",100L,"IDMP-KEY-04");
+        Bill bill = billService.createPayment("BILL-REF-04","000000000001",100L,"0000000001","IDMP-KEY-04");
         assertEquals(BillStatus.Pending, bill.getStatus());
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
-        when(walletClient.reserve(bill.getWalletNumber(),bill.getAmount(),reserveKey)).thenThrow(new ReserveDeclinedException("No funds in the wallet"));
+        when(walletClient.reserve(bill.getWalletNumber(),bill.getAmount(),bill.getCif(),reserveKey)).thenThrow(new ReserveDeclinedException("No funds in the wallet"));
 
 
         // ACT
@@ -148,10 +148,10 @@ public class BillServiceIntegrationTest {
     public void billerAccept_reservedFunds_marksPaid(){
         //ARRANGE : create bill -> reserve (customer -> suspense)
 
-        Bill bill = billService.createPayment("BILL-REF-05","000000000001",500L,"IDMP-KEY-05");
+        Bill bill = billService.createPayment("BILL-REF-05","000000000001",500L,"0000000001","IDMP-KEY-05");
         assertEquals(BillStatus.Pending, bill.getStatus());
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
-        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey)).thenReturn(new HoldResponse("ENTRY-456","rIDMP-KEY-05","0000000001"));
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), bill.getCif() ,reserveKey)).thenReturn(new HoldResponse("ENTRY-456","rIDMP-KEY-05","0000000001"));
         Bill reserved = billService.reserveFunds(bill);
         assertEquals(BillStatus.Reserved, reserved.getStatus());
         String captureKey = "c" + reserved.getPaymentId().replace("-","");
@@ -169,10 +169,10 @@ public class BillServiceIntegrationTest {
     @Test
     public void billerReject_marksRejected(){
         // ARRANGE: create bill -> reserve (customer -> suspense)
-        Bill bill = billService.createPayment("BILL-REF-06","000000000001",500L,"IDMP-KEY-06");
+        Bill bill = billService.createPayment("BILL-REF-06","000000000001",500L,"0000000001","IDMP-KEY-06");
         assertEquals(BillStatus.Pending, bill.getStatus());
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
-        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey)).thenReturn(new HoldResponse("ENTRY-456","rIDMP-KEY-06","0000000001"));
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), bill.getCif(),reserveKey)).thenReturn(new HoldResponse("ENTRY-456","rIDMP-KEY-06","0000000001"));
         Bill reserved = billService.reserveFunds(bill);
         assertEquals(BillStatus.Reserved, reserved.getStatus());
 
@@ -189,11 +189,11 @@ public class BillServiceIntegrationTest {
     @Test
     public void resolve_calledTwice_capturesOnce(){
         // ARRANGE: create the bill and reserve it (customer -> suspense)
-        Bill bill = billService.createPayment("BILL-REF-07","000000000001",500L,"IDMP-KEY-07");
+        Bill bill = billService.createPayment("BILL-REF-07","000000000001",500L,"0000000001","IDMP-KEY-07");
         assertEquals(BillStatus.Pending, bill.getStatus());
 
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
-        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), reserveKey))
+        when(walletClient.reserve(bill.getWalletNumber(), bill.getAmount(), bill.getCif(),reserveKey))
                 .thenReturn(new HoldResponse("ENTRY-321","rIDMP-KEY-07","0000000001"));
 
         Bill reserved = billService.reserveFunds(bill);

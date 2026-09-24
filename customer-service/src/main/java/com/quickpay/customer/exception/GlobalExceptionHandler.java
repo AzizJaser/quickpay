@@ -153,4 +153,13 @@ public class GlobalExceptionHandler {
         return problem;
     }
 
+    @ExceptionHandler(BillUnavailableException.class)
+    public ProblemDetail handlerBillUnavailableException(BillUnavailableException e){
+        logger.warn("bill unavailable", e);
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE, e.getMessage());
+        problem.setTitle("bill service unavailable");
+        return problem;
+    }
 }

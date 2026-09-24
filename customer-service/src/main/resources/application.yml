@@ -54,8 +54,10 @@ logging:
 
 
 quickpay:
-  wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080}
+  wallet-base-url: ${WALLET_BASE_URL:http://localhost:8080} # wallet port 8080
   wallet-time-out-seconds: ${WALLET_TIME_OUT_SECONDS:2}
+  bill-base-url: ${BILL_BASE_URL:http://localhost:8081} # bill port 8081
+  bill-time-out-seconds: ${BILL_TIME_OUT_SECONDS:2}
 
 customer:
   events-exchange: ${CUSTOMER_EVENTS_EXCHANGE:quickpay.events}

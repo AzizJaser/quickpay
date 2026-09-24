@@ -9,10 +9,7 @@ import com.quickpay.bill.dto.response.HoldResponse;
 import com.quickpay.bill.dto.response.TransferResponse;
 import com.quickpay.bill.enums.BillStatus;
 import com.quickpay.bill.enums.BillerStatus;
-import com.quickpay.bill.exception.BillNotFoundException;
-import com.quickpay.bill.exception.FundIsReleasedException;
-import com.quickpay.bill.exception.ReserveDeclinedException;
-import com.quickpay.bill.exception.SettleRejectedException;
+import com.quickpay.bill.exception.*;
 import com.quickpay.bill.repository.BillRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -47,13 +44,13 @@ public class BillService {
     private final Logger logger = LoggerFactory.getLogger(BillService.class);
 
 
-    public Bill createPayment(String billReference, String walletNumber, Long amount, String idempotencyKey){
+    public Bill createPayment(String billReference, String walletNumber, Long amount, String cif ,String idempotencyKey){
         Optional<Bill> existing = billRepository.findByIdempotencyKey(idempotencyKey);
         if(existing.isPresent()){
             return existing.get();
         }
 
-        Bill bill = new Bill(billReference, walletNumber, amount, idempotencyKey);
+        Bill bill = new Bill(billReference, walletNumber, amount, cif, idempotencyKey);
         try {
             billRepository.save(bill);
             return bill;
@@ -70,10 +67,9 @@ public class BillService {
         String reserveKey = "r" + bill.getPaymentId().replace("-","");
         try {
             logger.info("Calling wallet service to reserve funds for bill number "+bill.getBillReference());
-            HoldResponse response = walletClient.reserve(bill.getWalletNumber(),bill.getAmount(),reserveKey);
+            HoldResponse response = walletClient.reserve(bill.getWalletNumber(),bill.getAmount(),bill.getCif(),reserveKey);
             logger.info("Response received from wallet service");
             bill.setEntryId(response.entryId());
-            bill.setCif(response.cif());
 
             bill.setStatus(BillStatus.Reserved);
 

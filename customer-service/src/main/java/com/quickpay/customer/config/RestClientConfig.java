@@ -19,13 +19,16 @@ public class RestClientConfig {
     private static final String CORRELATION_HEADER = "X-Correlation-ID";
 
     @Value("${quickpay.wallet-time-out-seconds}")
-    private long timeout;
+    private long wallet_timeout;
+
+    @Value("${quickpay.bill-time-out-seconds}")
+    private long bill_timeout;
 
     @Bean
     RestClient walletRestClient(@Value("${quickpay.wallet-base-url}") String baseUrl){
         var settings = ClientHttpRequestFactorySettings.DEFAULTS
-                .withConnectTimeout(Duration.ofSeconds(timeout))
-                .withReadTimeout(Duration.ofSeconds(timeout));
+                .withConnectTimeout(Duration.ofSeconds(wallet_timeout))
+                .withReadTimeout(Duration.ofSeconds(wallet_timeout));
 
         return RestClient.builder()
                 .baseUrl(baseUrl)
@@ -39,5 +42,26 @@ public class RestClientConfig {
                     return execution.execute(request,body);
                 }))
                 .build();
+    }
+
+    @Bean
+    RestClient billRestClient(@Value("${quickpay.bill-base-url}") String baseUrl){
+        var settings = ClientHttpRequestFactorySettings.DEFAULTS
+                .withConnectTimeout(Duration.ofSeconds(bill_timeout))
+                .withReadTimeout(Duration.ofSeconds(bill_timeout));
+
+        return RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(ClientHttpRequestFactories.get(settings))
+                .requestInterceptor(((request, body, execution) -> {
+                    String key = MDC.get(MDC_KEY);
+                    if(key != null){
+                        request.getHeaders().add(CORRELATION_HEADER,key);
+                    }
+
+                    return execution.execute(request,body);
+                }))
+                .build();
+
     }
 }

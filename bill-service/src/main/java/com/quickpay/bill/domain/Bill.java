@@ -37,11 +37,12 @@ public class Bill {
 
     private String cif;
 
-    public Bill(String billReference, String walletNumber, Long amount, String idempotencyKey) {
+    public Bill(String billReference, String walletNumber, Long amount, String cif, String idempotencyKey) {
         this.paymentId = UUID.randomUUID().toString();
         this.billReference = billReference;
         this.walletNumber = walletNumber;
         this.amount = amount;
+        this.cif = cif;
         this.status = BillStatus.Pending;
         this.idempotencyKey = idempotencyKey;
     }
